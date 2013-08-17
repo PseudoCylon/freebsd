@@ -2478,8 +2478,9 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 	struct rt2860_rxwi *rxwi;
 	uint32_t flags;
 	uint16_t len, phy;
-	uint8_t ant, rssi;
-	int8_t nf;
+	int rssi;
+	uint8_t ant;
+	int8_t nf, rssidb, rssidbm;
 
 	rxwi = mtod(m, struct rt2860_rxwi *);
 	len = le16toh(rxwi->len) & 0xfff;
@@ -2529,8 +2530,15 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 	}
 
 	ant = run_maxrssi_chain(sc, rxwi);
-	rssi = rxwi->rssi[ant];
-	nf = run_rssi2dbm(sc, rssi, ant);
+	rssidb = rxwi->rssi[ant];
+	rssidbm = run_rssi2dbm(sc, rssidb, ant);
+	if (rssidbm >= -70)
+		nf = -92;
+	else {
+		int8_t snr_min = MIN(rxwi->snr[0], rxwi->snr[1]);
+		nf = (snr_min == 0) ? rssidbm - 5 : rssidbm - snr_min;
+	}
+	rssi = (rssidbm - nf);
 
 	m->m_pkthdr.rcvif = ifp;
 	m->m_pkthdr.len = m->m_len = len;
@@ -2548,7 +2556,7 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 		tap->wr_flags = 0;
 		tap->wr_chan_freq = htole16(ic->ic_curchan->ic_freq);
 		tap->wr_chan_flags = htole16(ic->ic_curchan->ic_flags);
-		tap->wr_antsignal = rssi;
+		tap->wr_antsignal = -95 + rssi;
 		tap->wr_antenna = ant;
 		tap->wr_dbm_antsignal = run_rssi2dbm(sc, rssi, ant);
 		tap->wr_rate = 2;	/* in case it can't be found below */

@@ -2044,7 +2044,7 @@ run_key_set_cb(void *arg)
 	if (!(k->wk_flags & IEEE80211_KEY_GROUP) ||
 	    (k->wk_flags & (IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV))) {
 		/* set initial packet number in IV+EIV */
-		if (k->wk_cipher == IEEE80211_CIPHER_WEP) {
+		if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_WEP) {
 			memset(iv, 0, sizeof iv);
 			iv[3] = vap->iv_def_txkey << 6;
 		} else {

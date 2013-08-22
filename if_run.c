@@ -2213,6 +2213,7 @@ run_ratectl_cb(void *arg, int pending)
 	struct run_softc *sc = arg;
 	struct ieee80211com *ic = sc->sc_ifp->if_l2com;
 	struct ieee80211vap *vap = TAILQ_FIRST(&ic->ic_vaps);
+	uint16_t tmp[6];
 
 	if (vap == NULL)
 		return;
@@ -2234,6 +2235,14 @@ run_ratectl_cb(void *arg, int pending)
 		RUN_UNLOCK(sc);
 		ieee80211_iterate_nodes(&ic->ic_sta, run_iter_func, sc);
 	}
+
+	RUN_LOCK(sc);
+	run_read_region_1(sc, RT2860_RX_STA_CNT0, (uint8_t *)tmp,
+	    sizeof(uint32_t) * 3);
+	RUN_UNLOCK(sc);
+	DPRINTFN(2, "Rx Err crc=%u phy=%u cca=%u plpc=%u dup=%u ovfl=%u\n",
+	    le16toh(tmp[0]), le16toh(tmp[1]), le16toh(tmp[2]),
+	    le16toh(tmp[3]), le16toh(tmp[4]), le16toh(tmp[5]));
 
 	if(sc->ratectl_run != RUN_RATECTL_OFF)
 		usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);

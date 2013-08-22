@@ -555,7 +555,7 @@ run_attach(device_t self)
 	struct ieee80211com *ic;
 	struct ifnet *ifp;
 	uint32_t ver;
-	int i, ntries, error;
+	int ntries, error;
 	uint8_t iface_index, bands;
 
 	device_set_usb_desc(self);
@@ -652,26 +652,20 @@ run_attach(device_t self)
 	bands = 0;
 	setbit(&bands, IEEE80211_MODE_11B);
 	setbit(&bands, IEEE80211_MODE_11G);
-	ieee80211_init_channels(ic, NULL, &bands);
-
-	/*
-	 * Do this by own because h/w supports
-	 * more channels than ieee80211_init_channels()
-	 */
+#ifdef	notyet
+	if (sc->rf_rev != RT3070_RF_2020)     /* RT3070_RF_2020 is b/g only */
+		setbit(&bands, IEEE80211_MODE_11NG);
+#endif
 	if (sc->rf_rev == RT2860_RF_2750 ||
 	    sc->rf_rev == RT2860_RF_2850 ||
 	    sc->rf_rev == RT3070_RF_3052) {
-		/* set supported .11a rates */
-		for (i = 14; i < N(rt2860_rf2850); i++) {
-			uint8_t chan = rt2860_rf2850[i].chan;
-			ic->ic_channels[ic->ic_nchans].ic_freq =
-			    ieee80211_ieee2mhz(chan, IEEE80211_CHAN_A);
-			ic->ic_channels[ic->ic_nchans].ic_ieee = chan;
-			ic->ic_channels[ic->ic_nchans].ic_flags = IEEE80211_CHAN_A;
-			ic->ic_channels[ic->ic_nchans].ic_extieee = 0;
-			ic->ic_nchans++;
-		}
+		setbit(&bands, IEEE80211_MODE_11A);
+#ifdef	notyet
+		setbit(&bands, IEEE80211_MODE_11NA);
+#endif
 	}
+
+	ieee80211_init_channels(ic, NULL, &bands);
 
 	ieee80211_ifattach(ic, sc->sc_bssid);
 

@@ -1753,10 +1753,6 @@ retry:
 			if (drop != NULL) {
 				/*
 				 * Enqueue the vnode for deferred vdrop().
-				 *
-				 * Once the pages are removed from the free
-				 * page list, "pageq" can be safely abused to
-				 * construct a short-lived list of vnodes.
 				 */
 				m->plinks.s.pv = drop;
 				SLIST_INSERT_HEAD(&deferred_vdrop_list, m,
@@ -2558,6 +2554,15 @@ vm_page_cache(vm_page_t m)
 		vm_page_free(m);
 		return;
 	}
+
+	/*
+	 * The above call to vm_radix_insert() could reclaim the one pre-
+	 * existing cached page from this object, resulting in a call to
+	 * vdrop().
+	 */
+	if (!cache_was_empty)
+		cache_was_empty = vm_radix_is_singleton(&object->cache);
+
 	m->flags |= PG_CACHED;
 	cnt.v_cache_count++;
 	PCPU_INC(cnt.v_tcached);

@@ -247,8 +247,8 @@ m_freem(struct mbuf *mb)
  */
 int
 m_extadd(struct mbuf *mb, caddr_t buf, u_int size,
-    void (*freef)(void *, void *), void *arg1, void *arg2, int flags, int type,
-    int wait)
+    int (*freef)(struct mbuf *, void *, void *), void *arg1, void *arg2,
+    int flags, int type, int wait)
 {
 	KASSERT(type != EXT_CLUSTER, ("%s: EXT_CLUSTER not allowed", __func__));
 
@@ -267,6 +267,7 @@ m_extadd(struct mbuf *mb, caddr_t buf, u_int size,
 	mb->m_ext.ext_arg1 = arg1;
 	mb->m_ext.ext_arg2 = arg2;
 	mb->m_ext.ext_type = type;
+	mb->m_ext.ext_flags = 0;
 
 	return (0);
 }
@@ -320,7 +321,7 @@ mb_free_ext(struct mbuf *m)
 		case EXT_EXTREF:
 			KASSERT(m->m_ext.ext_free != NULL,
 				("%s: ext_free not set", __func__));
-			(*(m->m_ext.ext_free))(m->m_ext.ext_arg1,
+			(void)(*(m->m_ext.ext_free))(m, m->m_ext.ext_arg1,
 			    m->m_ext.ext_arg2);
 			break;
 		default:
@@ -342,6 +343,7 @@ mb_free_ext(struct mbuf *m)
 	m->m_ext.ref_cnt = NULL;
 	m->m_ext.ext_size = 0;
 	m->m_ext.ext_type = 0;
+	m->m_ext.ext_flags = 0;
 	m->m_flags &= ~M_EXT;
 	uma_zfree(zone_mbuf, m);
 }
@@ -368,6 +370,7 @@ mb_dupcl(struct mbuf *n, struct mbuf *m)
 	n->m_ext.ext_size = m->m_ext.ext_size;
 	n->m_ext.ref_cnt = m->m_ext.ref_cnt;
 	n->m_ext.ext_type = m->m_ext.ext_type;
+	n->m_ext.ext_flags = m->m_ext.ext_flags;
 	n->m_flags |= M_EXT;
 	n->m_flags |= m->m_flags & M_RDONLY;
 }
@@ -435,11 +438,6 @@ m_sanity(struct mbuf *m0, int sanitize)
 			M_SANITY_ACTION("m_data outside mbuf data range right");
 		if ((caddr_t)m->m_data + m->m_len > b)
 			M_SANITY_ACTION("m_data + m_len exeeds mbuf space");
-		if ((m->m_flags & M_PKTHDR) && m->m_pkthdr.header) {
-			if ((caddr_t)m->m_pkthdr.header < a ||
-			    (caddr_t)m->m_pkthdr.header > b)
-				M_SANITY_ACTION("m_pkthdr.header outside mbuf data range");
-		}
 
 		/* m->m_nextpkt may only be set on first mbuf in chain. */
 		if (m != m0 && m->m_nextpkt != NULL) {
@@ -743,7 +741,6 @@ m_copymdata(struct mbuf *m, struct mbuf *n, int off, int len,
 			return NULL;
 		bcopy(&buf, mm->m_ext.ext_buf, mm->m_len);
 		mm->m_data = mm->m_ext.ext_buf;
-		mm->m_pkthdr.header = NULL;
 	}
 	if (prep && !(mm->m_flags & M_EXT) && len > M_LEADINGSPACE(mm)) {
 		bcopy(mm->m_data, &buf, mm->m_len);
@@ -754,7 +751,6 @@ m_copymdata(struct mbuf *m, struct mbuf *n, int off, int len,
 		       mm->m_ext.ext_size - mm->m_len, mm->m_len);
 		mm->m_data = (caddr_t)mm->m_ext.ext_buf +
 			      mm->m_ext.ext_size - mm->m_len;
-		mm->m_pkthdr.header = NULL;
 	}
 
 	/* Append/prepend as many mbuf (clusters) as necessary to fit len. */

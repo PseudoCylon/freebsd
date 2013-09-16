@@ -351,7 +351,7 @@ make bmake: .PHONY
 	${_+_}@cd ${.CURDIR}/usr.bin/${.TARGET}; \
 		${MMAKE} obj DESTDIR= && \
 		${MMAKE} depend DESTDIR= && \
-		${MMAKE} all DESTDIR= && \
+		${MMAKE} all DESTDIR= PROGNAME=${MYMAKE:T} && \
 		${MMAKE} install DESTDIR=${MYMAKE:H} BINDIR= PROGNAME=${MYMAKE:T}
 
 tinderbox toolchains kernel-toolchains: upgrade_checks
@@ -498,3 +498,11 @@ universe_epilogue:
 
 buildLINT:
 	${MAKE} -C ${.CURDIR}/sys/${_TARGET}/conf LINT
+
+.if defined(.PARSEDIR)
+.if make(universe)
+# we do not want a failure of one branch abort all.
+MAKE_JOB_ERROR_TOKEN= no
+.export MAKE_JOB_ERROR_TOKEN
+.endif
+.endif

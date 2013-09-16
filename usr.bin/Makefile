@@ -68,6 +68,7 @@ SUBDIR=	alias \
 	id \
 	ipcrm \
 	ipcs \
+	iscsictl \
 	join \
 	jot \
 	${_kdump} \
@@ -260,6 +261,10 @@ SUBDIR+=        truss
 
 .if ${MK_KERBEROS_SUPPORT} != "no"
 SUBDIR+=	compile_et
+.endif
+
+.if ${MK_LDNS_UTILS} != "no"
+SUBDIR+=	host
 .endif
 
 .if ${MK_LIBTHR} != "no"

@@ -707,7 +707,7 @@ sys_kqueue(struct thread *td, struct kqueue_args *uap)
 	TASK_INIT(&kq->kq_task, 0, kqueue_task, kq);
 
 	FILEDESC_XLOCK(fdp);
-	SLIST_INSERT_HEAD(&fdp->fd_kqlist, kq, kq_list);
+	TAILQ_INSERT_HEAD(&fdp->fd_kqlist, kq, kq_list);
 	FILEDESC_XUNLOCK(fdp);
 
 	finit(fp, FREAD | FWRITE, DTYPE_KQUEUE, kq, &kqueueops);
@@ -824,9 +824,11 @@ kern_kevent(struct thread *td, int fd, int nchanges, int nevents,
 	struct kevent *kevp, *changes;
 	struct kqueue *kq;
 	struct file *fp;
+	cap_rights_t rights;
 	int i, n, nerrors, error;
 
-	if ((error = fget(td, fd, CAP_POST_EVENT, &fp)) != 0)
+	error = fget(td, fd, cap_rights_init(&rights, CAP_POST_EVENT), &fp);
+	if (error != 0)
 		return (error);
 	if ((error = kqueue_acquire(fp, &kq)) != 0)
 		goto done_norel;
@@ -964,6 +966,7 @@ kqueue_register(struct kqueue *kq, struct kevent *kev, struct thread *td, int wa
 	struct filterops *fops;
 	struct file *fp;
 	struct knote *kn, *tkn;
+	cap_rights_t rights;
 	int error, filt, event;
 	int haskqglobal;
 
@@ -982,7 +985,8 @@ kqueue_register(struct kqueue *kq, struct kevent *kev, struct thread *td, int wa
 findkn:
 	if (fops->f_isfd) {
 		KASSERT(td != NULL, ("td is NULL"));
-		error = fget(td, kev->ident, CAP_POLL_EVENT, &fp);
+		error = fget(td, kev->ident,
+		    cap_rights_init(&rights, CAP_POLL_EVENT), &fp);
 		if (error)
 			goto done;
 
@@ -1714,7 +1718,7 @@ kqueue_close(struct file *fp, struct thread *td)
 	KQ_UNLOCK(kq);
 
 	FILEDESC_XLOCK(fdp);
-	SLIST_REMOVE(&fdp->fd_kqlist, kq, kqueue, kq_list);
+	TAILQ_REMOVE(&fdp->fd_kqlist, kq, kq_list);
 	FILEDESC_XUNLOCK(fdp);
 
 	seldrain(&kq->kq_sel);
@@ -2091,7 +2095,7 @@ knote_fdclose(struct thread *td, int fd)
 	 * We shouldn't have to worry about new kevents appearing on fd
 	 * since filedesc is locked.
 	 */
-	SLIST_FOREACH(kq, &fdp->fd_kqlist, kq_list) {
+	TAILQ_FOREACH(kq, &fdp->fd_kqlist, kq_list) {
 		KQ_LOCK(kq);
 
 again:
@@ -2237,9 +2241,11 @@ kqfd_register(int fd, struct kevent *kev, struct thread *td, int waitok)
 {
 	struct kqueue *kq;
 	struct file *fp;
+	cap_rights_t rights;
 	int error;
 
-	if ((error = fget(td, fd, CAP_POST_EVENT, &fp)) != 0)
+	error = fget(td, fd, cap_rights_init(&rights, CAP_POST_EVENT), &fp);
+	if (error != 0)
 		return (error);
 	if ((error = kqueue_acquire(fp, &kq)) != 0)
 		goto noacquire;

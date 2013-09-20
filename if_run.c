@@ -556,7 +556,7 @@ run_attach(device_t self)
 	struct ieee80211com *ic;
 	struct ifnet *ifp;
 	uint32_t ver;
-	int i, ntries, error;
+	int ntries, error;
 	uint8_t iface_index, bands;
 
 	device_set_usb_desc(self);
@@ -653,26 +653,20 @@ run_attach(device_t self)
 	bands = 0;
 	setbit(&bands, IEEE80211_MODE_11B);
 	setbit(&bands, IEEE80211_MODE_11G);
-	ieee80211_init_channels(ic, NULL, &bands);
-
-	/*
-	 * Do this by own because h/w supports
-	 * more channels than ieee80211_init_channels()
-	 */
+#ifdef	notyet
+	if (sc->rf_rev != RT3070_RF_2020)     /* RT3070_RF_2020 is b/g only */
+		setbit(&bands, IEEE80211_MODE_11NG);
+#endif
 	if (sc->rf_rev == RT2860_RF_2750 ||
 	    sc->rf_rev == RT2860_RF_2850 ||
 	    sc->rf_rev == RT3070_RF_3052) {
-		/* set supported .11a rates */
-		for (i = 14; i < N(rt2860_rf2850); i++) {
-			uint8_t chan = rt2860_rf2850[i].chan;
-			ic->ic_channels[ic->ic_nchans].ic_freq =
-			    ieee80211_ieee2mhz(chan, IEEE80211_CHAN_A);
-			ic->ic_channels[ic->ic_nchans].ic_ieee = chan;
-			ic->ic_channels[ic->ic_nchans].ic_flags = IEEE80211_CHAN_A;
-			ic->ic_channels[ic->ic_nchans].ic_extieee = 0;
-			ic->ic_nchans++;
-		}
+		setbit(&bands, IEEE80211_MODE_11A);
+#ifdef	notyet
+		setbit(&bands, IEEE80211_MODE_11NA);
+#endif
 	}
+
+	ieee80211_init_channels(ic, NULL, &bands);
 
 	ieee80211_ifattach(ic, sc->sc_bssid);
 
@@ -1886,53 +1880,60 @@ run_wme_update_cb(void *arg)
 {
 	struct ieee80211com *ic = arg;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	struct ieee80211_wme_state *wmesp = &ic->ic_wme;
-	int aci, error = 0;
+	struct wmeParams *params = ic->ic_wme.wme_chanParams.cap_wmeParams;
+	int aci;
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
 
 	/* update MAC TX configuration registers */
 	for (aci = 0; aci < WME_NUM_AC; aci++) {
-		error = run_write(sc, RT2860_EDCA_AC_CFG(aci),
-		    wmesp->wme_params[aci].wmep_logcwmax << 16 |
-		    wmesp->wme_params[aci].wmep_logcwmin << 12 |
-		    wmesp->wme_params[aci].wmep_aifsn  <<  8 |
-		    wmesp->wme_params[aci].wmep_txopLimit);
-		if (error) goto err;
+		if (run_write(sc, RT2860_EDCA_AC_CFG(aci),
+		    (params + aci)->wmep_logcwmax << 16 |
+		    (params + aci)->wmep_logcwmin << 12 |
+		    (params + aci)->wmep_aifsn  <<  8 |
+		    (params + aci)->wmep_txopLimit))
+			goto err;
+
+		DPRINTFN(4, "aci=%u aifsc=%u cwmin=%u cwmax=%u txop=%u\n",
+		    aci, (params + aci)->wmep_aifsn, (params + aci)->wmep_logcwmin,
+		    (params + aci)->wmep_logcwmax, (params + aci)->wmep_txopLimit);
 	}
 
 	/* update SCH/DMA registers too */
-	error = run_write(sc, RT2860_WMM_AIFSN_CFG,
-	    wmesp->wme_params[WME_AC_VO].wmep_aifsn  << 12 |
-	    wmesp->wme_params[WME_AC_VI].wmep_aifsn  <<  8 |
-	    wmesp->wme_params[WME_AC_BK].wmep_aifsn  <<  4 |
-	    wmesp->wme_params[WME_AC_BE].wmep_aifsn);
-	if (error) goto err;
-	error = run_write(sc, RT2860_WMM_CWMIN_CFG,
-	    wmesp->wme_params[WME_AC_VO].wmep_logcwmin << 12 |
-	    wmesp->wme_params[WME_AC_VI].wmep_logcwmin <<  8 |
-	    wmesp->wme_params[WME_AC_BK].wmep_logcwmin <<  4 |
-	    wmesp->wme_params[WME_AC_BE].wmep_logcwmin);
-	if (error) goto err;
-	error = run_write(sc, RT2860_WMM_CWMAX_CFG,
-	    wmesp->wme_params[WME_AC_VO].wmep_logcwmax << 12 |
-	    wmesp->wme_params[WME_AC_VI].wmep_logcwmax <<  8 |
-	    wmesp->wme_params[WME_AC_BK].wmep_logcwmax <<  4 |
-	    wmesp->wme_params[WME_AC_BE].wmep_logcwmax);
-	if (error) goto err;
-	error = run_write(sc, RT2860_WMM_TXOP0_CFG,
-	    wmesp->wme_params[WME_AC_BK].wmep_txopLimit << 16 |
-	    wmesp->wme_params[WME_AC_BE].wmep_txopLimit);
-	if (error) goto err;
-	error = run_write(sc, RT2860_WMM_TXOP1_CFG,
-	    wmesp->wme_params[WME_AC_VO].wmep_txopLimit << 16 |
-	    wmesp->wme_params[WME_AC_VI].wmep_txopLimit);
+	if (run_write(sc, RT2860_WMM_AIFSN_CFG,
+	    (params + WME_AC_VO)->wmep_aifsn  << 12 |
+	    (params + WME_AC_VI)->wmep_aifsn  <<  8 |
+	    (params + WME_AC_BK)->wmep_aifsn  <<  4 |
+	    (params + WME_AC_BE)->wmep_aifsn))
+		goto err;
 
-err:
-	if (error)
-		DPRINTF("WME update failed\n");
+	if (run_write(sc, RT2860_WMM_CWMIN_CFG,
+	    (params + WME_AC_VO)->wmep_logcwmin << 12 |
+	    (params + WME_AC_VI)->wmep_logcwmin <<  8 |
+	    (params + WME_AC_BK)->wmep_logcwmin <<  4 |
+	    (params + WME_AC_BE)->wmep_logcwmin))
+		goto err;
+
+	if (run_write(sc, RT2860_WMM_CWMAX_CFG,
+	    (params + WME_AC_VO)->wmep_logcwmax << 12 |
+	    (params + WME_AC_VI)->wmep_logcwmax <<  8 |
+	    (params + WME_AC_BK)->wmep_logcwmax <<  4 |
+	    (params + WME_AC_BE)->wmep_logcwmax))
+		goto err;
+
+	if (run_write(sc, RT2860_WMM_TXOP0_CFG,
+	    (params + WME_AC_BK)->wmep_txopLimit << 16 |
+	    (params + WME_AC_BE)->wmep_txopLimit))
+		goto err;
+	if (run_write(sc, RT2860_WMM_TXOP1_CFG,
+	    (params + WME_AC_VO)->wmep_txopLimit << 16 |
+	    (params + WME_AC_VI)->wmep_txopLimit))
+		goto err;
 
 	return;
+
+err:
+	DPRINTF("WME update failed\n");
 }
 
 static int
@@ -2045,7 +2046,7 @@ run_key_set_cb(void *arg)
 	if (!(k->wk_flags & IEEE80211_KEY_GROUP) ||
 	    (k->wk_flags & (IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV))) {
 		/* set initial packet number in IV+EIV */
-		if (k->wk_cipher == IEEE80211_CIPHER_WEP) {
+		if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_WEP) {
 			memset(iv, 0, sizeof iv);
 			iv[3] = vap->iv_def_txkey << 6;
 		} else {
@@ -2213,6 +2214,7 @@ run_ratectl_cb(void *arg, int pending)
 	struct run_softc *sc = arg;
 	struct ieee80211com *ic = sc->sc_ifp->if_l2com;
 	struct ieee80211vap *vap = TAILQ_FIRST(&ic->ic_vaps);
+	uint16_t tmp[6];
 
 	if (vap == NULL)
 		return;
@@ -2234,6 +2236,14 @@ run_ratectl_cb(void *arg, int pending)
 		RUN_UNLOCK(sc);
 		ieee80211_iterate_nodes(&ic->ic_sta, run_iter_func, sc);
 	}
+
+	RUN_LOCK(sc);
+	run_read_region_1(sc, RT2860_RX_STA_CNT0, (uint8_t *)tmp,
+	    sizeof(uint32_t) * 3);
+	RUN_UNLOCK(sc);
+	DPRINTFN(2, "Rx Err crc=%u phy=%u cca=%u plpc=%u dup=%u ovfl=%u\n",
+	    le16toh(tmp[0]), le16toh(tmp[1]), le16toh(tmp[2]),
+	    le16toh(tmp[3]), le16toh(tmp[4]), le16toh(tmp[5]));
 
 	if(sc->ratectl_run != RUN_RATECTL_OFF)
 		usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);
@@ -2472,8 +2482,9 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 	struct rt2860_rxwi *rxwi;
 	uint32_t flags;
 	uint16_t len, phy;
-	uint8_t ant, rssi;
-	int8_t nf;
+	int rssi;
+	uint8_t ant;
+	int8_t nf, rssidb, rssidbm;
 
 	rxwi = mtod(m, struct rt2860_rxwi *);
 	len = le16toh(rxwi->len) & 0xfff;
@@ -2523,8 +2534,15 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 	}
 
 	ant = run_maxrssi_chain(sc, rxwi);
-	rssi = rxwi->rssi[ant];
-	nf = run_rssi2dbm(sc, rssi, ant);
+	rssidb = rxwi->rssi[ant];
+	rssidbm = run_rssi2dbm(sc, rssidb, ant);
+	if (rssidbm >= -70)
+		nf = -92;
+	else {
+		int8_t snr_min = MIN(rxwi->snr[0], rxwi->snr[1]);
+		nf = (snr_min == 0) ? rssidbm - 5 : rssidbm - snr_min;
+	}
+	rssi = (rssidbm - nf);
 
 	m->m_pkthdr.rcvif = ifp;
 	m->m_pkthdr.len = m->m_len = len;
@@ -2542,7 +2560,7 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 		tap->wr_flags = 0;
 		tap->wr_chan_freq = htole16(ic->ic_curchan->ic_freq);
 		tap->wr_chan_flags = htole16(ic->ic_curchan->ic_flags);
-		tap->wr_antsignal = rssi;
+		tap->wr_antsignal = -95 + rssi;
 		tap->wr_antenna = ant;
 		tap->wr_dbm_antsignal = run_rssi2dbm(sc, rssi, ant);
 		tap->wr_rate = 2;	/* in case it can't be found below */

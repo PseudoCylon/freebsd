@@ -57,30 +57,6 @@ typedef struct {
 	mtx_assert(IEEE80211_LOCK_OBJ(_ic), MA_NOTOWNED)
 
 /*
- * Transmit lock.
- *
- * This is a (mostly) temporary lock designed to serialise all of the
- * transmission operations throughout the stack.
- */
-typedef struct {
-	char		name[16];		/* e.g. "ath0_com_lock" */
-	struct mtx	mtx;
-} ieee80211_tx_lock_t;
-#define	IEEE80211_TX_LOCK_INIT(_ic, _name) do {				\
-	ieee80211_tx_lock_t *cl = &(_ic)->ic_txlock;			\
-	snprintf(cl->name, sizeof(cl->name), "%s_tx_lock", _name);	\
-	mtx_init(&cl->mtx, cl->name, NULL, MTX_DEF);	\
-} while (0)
-#define	IEEE80211_TX_LOCK_OBJ(_ic)	(&(_ic)->ic_txlock.mtx)
-#define	IEEE80211_TX_LOCK_DESTROY(_ic) mtx_destroy(IEEE80211_TX_LOCK_OBJ(_ic))
-#define	IEEE80211_TX_LOCK(_ic)	   mtx_lock(IEEE80211_TX_LOCK_OBJ(_ic))
-#define	IEEE80211_TX_UNLOCK(_ic)	   mtx_unlock(IEEE80211_TX_LOCK_OBJ(_ic))
-#define	IEEE80211_TX_LOCK_ASSERT(_ic) \
-	mtx_assert(IEEE80211_TX_LOCK_OBJ(_ic), MA_OWNED)
-#define	IEEE80211_TX_UNLOCK_ASSERT(_ic) \
-	mtx_assert(IEEE80211_TX_LOCK_OBJ(_ic), MA_NOTOWNED)
-
-/*
  * Node locking definitions.
  */
 typedef struct {
@@ -160,6 +136,89 @@ typedef struct mtx ieee80211_ageq_lock_t;
 #define	IEEE80211_AGEQ_DESTROY(_aq)	mtx_destroy(&(_aq)->aq_lock)
 #define	IEEE80211_AGEQ_LOCK(_aq)	mtx_lock(&(_aq)->aq_lock)
 #define	IEEE80211_AGEQ_UNLOCK(_aq)	mtx_unlock(&(_aq)->aq_lock)
+
+/*
+ * Tx queue definitionse
+ */
+/*
+ * IFQ_HANDOFF_ADJ() minus calling if_start()
+ * TODO fragment
+ */
+#define IEEE80211_ENQUEUE(ifp, m, e) do {				\
+	struct ieee80211com *c = (ifp)->if_l2com;			\
+	struct ieee80211txq *q = &c->ic_txq;				\
+	IF_LOCK(&(ifp)->if_snd);					\
+	if (q->it_cnt >= IEEE80211_TXQ_MAX) {				\
+		(e) = ENOBUFS;						\
+		IF_UNLOCK(&(ifp)->if_snd);				\
+		break;							\
+	}								\
+	q->it_m[q->it_tail] = (m);					\
+	IEEE80211_TXQ_INC(q->it_tail);					\
+	q->it_cnt++;							\
+	(e) = 0;							\
+	IF_UNLOCK(&(ifp)->if_snd);					\
+} while (0)
+
+#define	IEEE80211_MGT_ENQUEUE(ifp, m) do {				\
+	struct ifaltq *ifq = &(ifp)->if_snd;				\
+	IF_LOCK(ifq);							\
+	(m)->m_nextpkt = NULL;						\
+	if (ifq->ifq_drv_tail == NULL)					\
+		ifq->ifq_drv_head = (m);				\
+	else								\
+		ifq->ifq_drv_tail->m_nextpkt = (m);			\
+	ifq->ifq_drv_tail = (m);					\
+	ifq->ifq_drv_len++;						\
+	IF_UNLOCK(ifq);							\
+} while (0)
+
+#ifdef	ALTQ
+/*TODO */
+#define	IEEE80211_DATA_DEQUEUE(ifp, m) do {				\
+}while (0)
+#endif
+
+#define	IEEE80211_DEQUEUE(ifp, m) do {					\
+	struct ifaltq *ifq = &(ifp)->if_snd;				\
+	struct ieee80211com *c = (ifp)->if_l2com;			\
+	struct ieee80211txq *q = &c->ic_txq;				\
+	(m) = ifq->ifq_drv_head;					\
+	if ((m) && ((m)->m_flags & M_TX_GO)) {				\
+		if ((ifq->ifq_drv_head = (m)->m_nextpkt) == NULL)	\
+			ifq->ifq_drv_tail = NULL;			\
+		(m)->m_nextpkt = NULL;					\
+		ifq->ifq_drv_len--;					\
+		break;							\
+	}								\
+	for (; q->it_cnt > 0; IEEE80211_TXQ_INC(q->it_head)) {		\
+		(m) = *(q->it_m + q->it_head);				\
+		if ((m) == NULL)					\
+			continue;					\
+		if (!((m)->m_flags & M_TX_GO)) {			\
+			(m) = NULL;					\
+			break;						\
+		}							\
+		q->it_m[q->it_head] = NULL;				\
+		IEEE80211_TXQ_INC(q->it_head);				\
+		q->it_cnt--;						\
+		break;							\
+	}								\
+} while (0)
+
+#define	IEEE80211_M_UPDATE(ifp, m, n) do {				\
+	struct mbuf **mp;						\
+	struct ieee80211com *c = (ifp)->if_l2com;			\
+	struct ieee80211txq *q = &c->ic_txq;				\
+	if ((m) == (n))							\
+		break;							\
+	IF_LOCK(&(ifp)->if_snd);					\
+	for (mp = q->it_m; m != *mp; mp++);				\
+	*mp = (n);							\
+	if (n == NULL)							\
+		q->it_cnt--;						\
+	IF_UNLOCK(&(ifp)->if_snd);					\
+} while (0)
 
 /*
  * 802.1x MAC ACL database locking definitions.
@@ -248,11 +307,14 @@ struct mbuf *ieee80211_getmgtframe(uint8_t **frm, int headroom, int pktlen);
 #define	M_FRAG		M_PROTO9		/* frame fragmentation */
 #define	M_FIRSTFRAG	M_PROTO10		/* first frame fragment */
 #define	M_LASTFRAG	M_PROTO11		/* last frame fragment */
+#define	M_TX_GO		M_PROTO12		/* go for Tx */
+#else
+#define	M_TX_GO		0x00800000		/* go for Tx */
 #endif
 
 #define	M_80211_TX \
 	(M_ENCAP|M_EAPOL|M_PWR_SAV|M_MORE_DATA|M_FF|M_TXCB| \
-	 M_AMPDU_MPDU|M_FRAG|M_FIRSTFRAG|M_LASTFRAG)
+	 M_AMPDU_MPDU|M_FRAG|M_FIRSTFRAG|M_LASTFRAG|M_TX_GO)
 
 /* rx path usage */
 #define	M_AMPDU		M_PROTO1		/* A-MPDU subframe */

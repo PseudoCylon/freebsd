@@ -269,6 +269,11 @@ null_update_chw(struct ieee80211com *ic)
 	if_printf(ic->ic_ifp, "%s: need callback\n", __func__);
 }
 
+static void
+null_qflush(struct ifnet *ifp)
+{
+}
+
 /*
  * Attach/setup the common net80211 state.  Called by
  * the driver on attach to prior to creating any vap's.
@@ -284,7 +289,6 @@ ieee80211_ifattach(struct ieee80211com *ic,
 	KASSERT(ifp->if_type == IFT_IEEE80211, ("if_type %d", ifp->if_type));
 
 	IEEE80211_LOCK_INIT(ic, ifp->if_xname);
-	IEEE80211_TX_LOCK_INIT(ic, ifp->if_xname);
 	TAILQ_INIT(&ic->ic_vaps);
 
 	/* Create a taskqueue for all state changes */
@@ -392,7 +396,6 @@ ieee80211_ifdetach(struct ieee80211com *ic)
 	ifmedia_removeall(&ic->ic_media);
 
 	taskqueue_free(ic->ic_tq);
-	IEEE80211_TX_LOCK_DESTROY(ic);
 	IEEE80211_LOCK_DESTROY(ic);
 }
 
@@ -433,6 +436,8 @@ ieee80211_vap_setup(struct ieee80211com *ic, struct ieee80211vap *vap,
 	if_initname(ifp, name, unit);
 	ifp->if_softc = vap;			/* back pointer */
 	ifp->if_flags = IFF_SIMPLEX | IFF_BROADCAST | IFF_MULTICAST;
+	ifp->if_transmit = ieee80211_transmit;
+	ifp->if_qflush = null_qflush;
 	ifp->if_start = ieee80211_start;
 	ifp->if_ioctl = ieee80211_ioctl;
 	ifp->if_init = ieee80211_init;

@@ -2928,7 +2928,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 	struct run_tx_data *data;
 	struct rt2870_txd *txd;
 	struct rt2860_txwi *txwi;
-	int hasqos, isdata, ismcast;
+	int hasqos, isdata, ismcast, free;
 	uint16_t mcs, qid, dur;
 	uint8_t ctl_ridx, tid, pad;
 
@@ -2961,17 +2961,30 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 	qid = M_WME_GETAC(m);
 
 	RUN_LOCK(sc);
-	/* reserve slots for mgmt/BA packets, just in case */
-	if (sc->sc_epq[qid].tx_nfree <= isdata ? 8 : 0) {
-		DPRINTFN(10, "tx ring %d is full\n", qid);
+	M_FRAG_CNT(m, free);
+	if ((sc->sc_epq[qid].tx_nfree <= isdata ? free : 0) &&
+	    (!(m->m_flags & M_FRAG) || m->m_flags & M_FIRSTFRAG)) {
+		sc->sc_ifp->if_drv_flags |= IFF_DRV_OACTIVE;
 		RUN_UNLOCK(sc);
-		m_freem(m);
+		DPRINTFN(1, "tx ring %d is full\n", qid);
+		DPRINTFN(1, "m_flags=%s frag\n", !(m->m_flags & M_FRAG) ? "no" :
+		    m->m_flags & M_FIRSTFRAG ? "first" : "other");
 		IEEE80211_M_UPDATE(ic->ic_ifp, m, NULL);
-		return (ENOBUFS);
+		M_FRAG_FREEM(m);
+		/* returning ENOBUFS will lock up Tx */
+		return (0);
 	}
 	data = STAILQ_FIRST(&sc->sc_epq[qid].tx_fh);
 	STAILQ_REMOVE_HEAD(&sc->sc_epq[qid].tx_fh, next);
-	sc->sc_epq[qid].tx_nfree--;
+	/*
+	 * no frag, take one,
+	 * first frag, reserve slots for subsequent frag
+	 * subsequent frag, do not substruct (first frag did it)
+	 */
+	if (!(m->m_flags & M_FRAG))
+		sc->sc_epq[qid].tx_nfree--;
+	else if (m->m_flags & M_FIRSTFRAG)
+		sc->sc_epq[qid].tx_nfree -= free;
 	RUN_UNLOCK(sc);
 
 	data->m = m;
@@ -3325,12 +3338,6 @@ run_transmit(struct ifnet *ifp, struct mbuf *m)
 	ni = (struct ieee80211_node *)m->m_pkthdr.rcvif;
 
 	err = run_tx(sc, m, ni);
-	if (err) {
-		RUN_LOCK(sc);
-		ifp->if_drv_flags |= IFF_DRV_OACTIVE;
-		RUN_UNLOCK(sc);
-		/* caller reclaims node */
-	}
 
 	return (err);
 }

@@ -49,6 +49,8 @@
 
 #define RUN_VAP_MAX		8
 
+#define RUN_TX_NOACK            (1 << 5)
+
 struct run_rx_radiotap_header {
 	struct ieee80211_radiotap_header wr_ihdr;
 	uint8_t		wr_flags;

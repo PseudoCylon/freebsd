@@ -387,7 +387,6 @@ static int	run_tx_param(struct run_softc *, struct mbuf *,
 static int	run_raw_xmit(struct ieee80211_node *, struct mbuf *,
 		    const struct ieee80211_bpf_params *);
 static int	run_transmit(struct ifnet *, struct mbuf *);
-//static void	run_start(struct ifnet *);
 static int	run_ioctl(struct ifnet *, u_long, caddr_t);
 static void	run_set_agc(struct run_softc *, uint8_t);
 static void	run_select_chan_group(struct run_softc *, int);
@@ -3341,39 +3340,6 @@ run_transmit(struct ifnet *ifp, struct mbuf *m)
 
 	return (err);
 }
-
-#if 0
-static void
-run_start(struct ifnet *ifp)
-{
-	struct run_softc *sc = ifp->if_softc;
-	struct ieee80211_node *ni;
-	struct mbuf *m;
-
-	RUN_LOCK(sc);
-
-	if ((ifp->if_drv_flags & IFF_DRV_RUNNING) == 0) {
-		RUN_UNLOCK(sc);
-		return;
-	}
-
-	for (;;) {
-		/* send data frames */
-		IFQ_DRV_DEQUEUE(&ifp->if_snd, m);
-		if (m == NULL)
-			break;
-
-		ni = (struct ieee80211_node *)m->m_pkthdr.rcvif;
-		if (run_tx(sc, m, ni) != 0) {
-			IFQ_DRV_PREPEND(&ifp->if_snd, m);
-			ifp->if_drv_flags |= IFF_DRV_OACTIVE;
-			break;
-		}
-	}
-
-	RUN_UNLOCK(sc);
-}
-#endif
 
 static int
 run_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)

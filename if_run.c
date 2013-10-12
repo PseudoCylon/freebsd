@@ -69,13 +69,10 @@ __FBSDID("$FreeBSD$");
 #include "usbdevs.h"
 
 #define USB_DEBUG_VAR run_debug
-#define	USB_DEBUG
 #include <dev/usb/usb_debug.h>
 
-#include "if_runreg.h"
-#include "if_runvar.h"
-//#include <dev/usb/wlan/if_runreg.h>
-//#include <dev/usb/wlan/if_runvar.h>
+#include <dev/usb/wlan/if_runreg.h>
+#include <dev/usb/wlan/if_runvar.h>
 
 #define	N(_a) ((int)(sizeof((_a)) / sizeof((_a)[0])))
 

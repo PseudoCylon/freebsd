@@ -49,6 +49,9 @@
 
 #define RUN_VAP_MAX		8
 
+#define RUN_TID_DEL		0
+#define RUN_TID_ADD		1
+
 #define RUN_TX_NOACK            (1 << 5)
 
 struct run_rx_radiotap_header {
@@ -116,9 +119,15 @@ struct run_cmdq {
 	void			(*func)(void *);
 	struct ieee80211_key	*k;
 	struct ieee80211_key	key;
-	uint8_t			mac[IEEE80211_ADDR_LEN];
-	uint8_t			wcid;
+	uint8_t			cmdq_mac[IEEE80211_ADDR_LEN];
+	uint16_t		cmdq_flags;
+	uint16_t		cmdq_tid;
+	uint8_t			cmdq_wcid;
 };
+/* for easy-to-remember */
+#define cmdq_wk_flags	cmdq_flags
+#define cmdq_wk_keyix	cmdq_tid
+#define cmdq_wk_pad	cmdq_wcid
 
 struct run_vap {
 	struct ieee80211vap             vap;
@@ -169,6 +178,17 @@ struct run_softc {
 
 	int				(*sc_srom_read)(struct run_softc *,
 					    uint16_t, uint16_t *);
+
+	int				(*sc_send_action)(struct ieee80211_node *, int,
+					    int, void *);
+	int				(*sc_addba_request)(struct ieee80211_node *,
+					    struct ieee80211_tx_ampdu *, int, int, int);
+	int				(*sc_addba_response)(struct ieee80211_node *,
+					    struct ieee80211_tx_ampdu *, int, int, int);
+	void				(*sc_addba_stop)(struct ieee80211_node *,
+					    struct ieee80211_tx_ampdu *);
+	void				(*sc_bar_response)(struct ieee80211_node *,
+					    struct ieee80211_tx_ampdu *, int status);
 
 	uint16_t			mac_ver;
 	uint16_t			mac_rev;
@@ -232,6 +252,8 @@ struct run_softc {
 
 	struct mbuf			*rx_m;
 
+	uint16_t			tid_bmap[RT2870_WCID_MAX];
+
 	uint8_t				fifo_cnt;
 
 	uint8_t				running;
@@ -242,6 +264,7 @@ struct run_softc {
 	uint8_t				rvp_cnt;
 	uint8_t				rvp_bmap;
 	uint8_t				sc_detached;
+	uint8_t				nongf;
 
 	union {
 		struct run_rx_radiotap_header th;

@@ -2006,7 +2006,7 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	RUN_UNLOCK(sc);
 	IEEE80211_LOCK(ic);
 
-	return(rvp->newstate(vap, nstate, arg));
+	return (rvp->newstate(vap, nstate, arg));
 }
 
 /* ARGSUSED */
@@ -5600,7 +5600,7 @@ run_stop(void *arg)
 
 	RUN_UNLOCK(sc);
 
-	for(i = 0; i < RUN_N_XFER; i++)
+	for (i = 0; i < RUN_N_XFER; i++)
 		usbd_transfer_drain(sc->sc_xfer[i]);
 
 	RUN_LOCK(sc);

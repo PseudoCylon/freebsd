@@ -5436,9 +5436,6 @@ run_init_locked(struct run_softc *sc)
 
 	for (i = 0; i < nitems(rt2870_def_mac); i++)
 		run_write(sc, rt2870_def_mac[i].reg, rt2870_def_mac[i].val);
-	run_write(sc, RT2860_WMM_AIFSN_CFG, 0x00002273);
-	run_write(sc, RT2860_WMM_CWMIN_CFG, 0x00002344);
-	run_write(sc, RT2860_WMM_CWMAX_CFG, 0x000034aa);
 
 	if (sc->mac_ver == 0x5392) {
 		run_write(sc, RT2860_TX_SW_CFG0, 0x00000404);
@@ -5539,9 +5536,6 @@ run_init_locked(struct run_softc *sc)
 
 	/* select default channel */
 	run_set_chan(sc, ic->ic_curchan);
-
-	/* setup initial protection mode */
-	run_updateprot_cb(ic);
 
 	/* turn radio LED on */
 	run_set_leds(sc, RT2860_LED_RADIO);

@@ -785,7 +785,7 @@ run_detach(device_t self)
 
 	RUN_LOCK(sc);
 	sc->ratectl_run = RUN_RATECTL_OFF;
-	sc->cmdq_run = sc->cmdq_key_set = RUN_CMDQ_ABORT;
+	sc->cmdq_run = RUN_CMDQ_ABORT;
 
 	/* free TX list, if any */
 	for (i = 0; i != RUN_EP_QUEUES; i++)
@@ -907,8 +907,7 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	if (sc->rvp_cnt++ == 0)
 		ic->ic_opmode = opmode;
 
-	if (opmode == IEEE80211_M_HOSTAP)
-		sc->cmdq_run = RUN_CMDQ_GO;
+	sc->cmdq_run = RUN_CMDQ_GO;
 
 #if 0
 	/*
@@ -982,18 +981,14 @@ run_cmdq_cb(void *arg, int pending)
 
 	/* call cmdq[].func locked */
 	RUN_LOCK(sc);
-	for (i = sc->cmdq_exec; sc->cmdq[i].func && pending;
-	    i = sc->cmdq_exec, pending--) {
+	for (i = sc->cmdq_exec; sc->cmdq[i].func != NULL ; i = sc->cmdq_exec) {
 		DPRINTFN(6, "cmdq_exec=%d pending=%d\n", i, pending);
 		if (sc->cmdq_run == RUN_CMDQ_GO) {
 			/*
-			 * If arg0 is NULL, callback func needs more
-			 * than one arg. So, pass ptr to cmdq struct.
+			 * .arg0 is either ptr to a variable or ptr to cmdq{}.
+			 * Each callback function will use it accordingly.
 			 */
-			if (sc->cmdq[i].arg0)
-				sc->cmdq[i].func(sc->cmdq[i].arg0);
-			else
-				sc->cmdq[i].func(&sc->cmdq[i]);
+			sc->cmdq[i].func(sc->cmdq[i].arg0);
 		}
 		sc->cmdq[i].arg0 = NULL;
 		sc->cmdq[i].func = NULL;
@@ -1902,9 +1897,13 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	sc->ratectl_run = RUN_RATECTL_OFF;
 	usb_callout_stop(&sc->ratectl_ch);
 
-	if (ostate == IEEE80211_S_RUN) {
+	switch (ostate) {
+	case IEEE80211_S_RUN:
 		/* turn link LED off */
 		run_set_leds(sc, RT2860_LED_RADIO);
+		break;
+	default:
+		break;
 	}
 
 	switch (nstate) {
@@ -1924,6 +1923,7 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			    tmp & ~(RT2860_BCN_TX_EN | RT2860_TSF_TIMER_EN |
 			    RT2860_TBTT_TIMER_EN));
 		}
+
 		break;
 
 	case IEEE80211_S_RUN:
@@ -2118,26 +2118,16 @@ run_key_set_cb(void *arg)
 	struct ieee80211_key *k = cmdq->k;
 	struct ieee80211com *ic = vap->iv_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	struct ieee80211_node *ni;
 	uint32_t attr;
-	uint16_t base, associd;
+	uint16_t base;
 	uint8_t mode, wcid, iv[8];
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
 
-	if (vap->iv_opmode == IEEE80211_M_HOSTAP)
-		ni = ieee80211_find_vap_node(&ic->ic_sta, vap, cmdq->cmdq_mac);
-	else
-		ni = vap->iv_bss;
-	associd = (ni != NULL) ? ni->ni_associd : 0;
-
 	/* map net80211 cipher to RT2860 security mode */
 	switch (k->wk_cipher->ic_cipher) {
 	case IEEE80211_CIPHER_WEP:
-		if(k->wk_keylen < 8)
-			mode = RT2860_MODE_WEP40;
-		else
-			mode = RT2860_MODE_WEP104;
+		mode = k->wk_keylen < 8 ? RT2860_MODE_WEP40 : RT2860_MODE_WEP104;
 		break;
 	case IEEE80211_CIPHER_TKIP:
 		mode = RT2860_MODE_TKIP;
@@ -2150,27 +2140,19 @@ run_key_set_cb(void *arg)
 		return;
 	}
 
-	DPRINTFN(1, "associd=%x, keyix=%d, mode=%x, type=%s, tx=%s, rx=%s\n",
-	    associd, k->wk_keyix, mode,
+	wcid = k->wk_pad;
+	base = k->wk_flags & IEEE80211_KEY_GROUP ?
+	    RT2860_SKEY(RUN_VAP(vap)->rvp_id, k->wk_keyix) : RT2860_PKEY(wcid);
+
+	DPRINTFN(1, "wcid=%x, keyix=%d, mode=%x, type=%s, tx=%s, rx=%s\n",
+	    wcid, k->wk_keyix, mode,
 	    (k->wk_flags & IEEE80211_KEY_GROUP) ? "group" : "pairwise",
 	    (k->wk_flags & IEEE80211_KEY_XMIT) ? "on" : "off",
 	    (k->wk_flags & IEEE80211_KEY_RECV) ? "on" : "off");
 
-	if (k->wk_flags & IEEE80211_KEY_GROUP) {
-		wcid = 0;	/* NB: update WCID0 for group keys */
-		base = RT2860_SKEY(RUN_VAP(vap)->rvp_id, k->wk_keyix);
-	} else {
-		wcid = (vap->iv_opmode == IEEE80211_M_STA) ?
-		    1 : RUN_AID2WCID(associd);
-		base = RT2860_PKEY(wcid);
-	}
 
 	if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_TKIP) {
-		if (run_write_region_1(sc, base, k->wk_key, 16))
-			return;
-		if (run_write_region_1(sc, base + 16, &k->wk_key[16], 8))	/* wk_txmic */
-			return;
-		if (run_write_region_1(sc, base + 24, &k->wk_key[24], 8))	/* wk_rxmic */
+		if (run_write_region_1(sc, base, k->wk_key, 32))
 			return;
 	} else {
 		/* roundup len to 16-bit: XXX fix write_region_1() instead */
@@ -2178,8 +2160,7 @@ run_key_set_cb(void *arg)
 			return;
 	}
 
-	if (!(k->wk_flags & IEEE80211_KEY_GROUP) ||
-	    (k->wk_flags & (IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV))) {
+	if (!(k->wk_flags & IEEE80211_KEY_GROUP)) {
 		/* set initial packet number in IV+EIV */
 		if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_WEP) {
 			memset(iv, 0, sizeof iv);
@@ -2222,9 +2203,6 @@ run_key_set_cb(void *arg)
 	}
 
 	/* TODO create a pass-thru key entry? */
-
-	/* need wcid to delete the right key later */
-	k->wk_pad = wcid;
 }
 
 /*
@@ -2239,26 +2217,48 @@ run_key_set(struct ieee80211vap *vap, struct ieee80211_key *k,
 		const uint8_t mac[IEEE80211_ADDR_LEN])
 {
 	struct ieee80211com *ic = vap->iv_ic;
+	struct ieee80211_node *ni;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
 	uint32_t i;
 
-	i = RUN_CMDQ_GET(&sc->cmdq_store);
-	DPRINTF("cmdq_store=%d\n", i);
-	sc->cmdq[i].func = run_key_set_cb;
-	sc->cmdq[i].arg0 = NULL;
-	sc->cmdq[i].arg1 = vap;
-	sc->cmdq[i].k = k;
-	IEEE80211_ADDR_COPY(sc->cmdq[i].cmdq_mac, mac);
-	ieee80211_runtask(ic, &sc->cmdq_task);
+	if (vap->iv_opmode == IEEE80211_M_HOSTAP)
+		ni = ieee80211_find_vap_node(&ic->ic_sta, vap, mac);
+	else
+		ni = vap->iv_bss;
 
-	/*
-	 * To make sure key will be set when hostapd
-	 * calls iv_key_set() before if_init().
-	 */
-	if (vap->iv_opmode == IEEE80211_M_HOSTAP) {
-		RUN_LOCK(sc);
-		sc->cmdq_key_set = RUN_CMDQ_GO;
+	/* need wcid to delete the right key later */
+	if (k->wk_flags & IEEE80211_KEY_GROUP || ni == NULL)
+		k->wk_pad = 0;	/* NB: update WCID0 for group keys */
+	else {
+		k->wk_pad = vap->iv_opmode == IEEE80211_M_STA ?
+		    1 : RUN_AID2WCID(ni->ni_associd);
+	}
+
+	DPRINTF("associd=%x wcid=%d\n",
+	    ni != NULL ? ni->ni_associd : 0xffff, k->wk_pad);
+
+	RUN_LOCK(sc);
+	if (isclr(sc->cmdq_key_del, k->wk_pad)) {
+		struct run_cmdq cmdq;
+
+		cmdq.arg1 = vap;
+		cmdq.k = k;
+		IEEE80211_ADDR_COPY(cmdq.cmdq_mac, mac);
+
+		run_key_set_cb(&cmdq);
+
 		RUN_UNLOCK(sc);
+	} else {
+		RUN_UNLOCK(sc);
+
+		i = RUN_CMDQ_GET(&sc->cmdq_store);
+		DPRINTF("cmdq_store=%d\n", i);
+		sc->cmdq[i].func = run_key_set_cb;
+		sc->cmdq[i].arg0 = &sc->cmdq[i];
+		sc->cmdq[i].arg1 = vap;
+		sc->cmdq[i].k = k;
+		IEEE80211_ADDR_COPY(sc->cmdq[i].cmdq_mac, mac);
+		ieee80211_runtask(ic, &sc->cmdq_task);
 	}
 
 	return (1);
@@ -2274,30 +2274,27 @@ run_key_delete_cb(void *arg)
 {
 	struct run_cmdq *cmdq = arg;
 	struct run_softc *sc = cmdq->arg1;
-	struct ieee80211_key *k = &cmdq->key;
 	uint32_t attr;
-	uint8_t wcid;
+	uint8_t wcid = cmdq->cmdq_wk_pad;
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
 
-	if (k->wk_flags & IEEE80211_KEY_GROUP) {
+	if (cmdq->cmdq_wk_flags & IEEE80211_KEY_GROUP) {
 		/* remove group key */
 		DPRINTF("removing group key\n");
 		run_read(sc, RT2860_SKEY_MODE_0_7, &attr);
-		attr &= ~(0xf << (k->wk_keyix * 4));
+		attr &= ~(0xf << (cmdq->cmdq_wk_keyix * 4));
 		run_write(sc, RT2860_SKEY_MODE_0_7, attr);
 	} else {
 		/* remove pairwise key */
-		DPRINTF("removing key for wcid %x\n", k->wk_pad);
-		/* matching wcid was written to wk_pad in run_key_set() */
-		wcid = k->wk_pad;
+		DPRINTF("removing key for wcid %x\n", wcid);
 		run_read(sc, RT2860_WCID_ATTR(wcid), &attr);
 		attr &= ~0xf;
 		run_write(sc, RT2860_WCID_ATTR(wcid), attr);
-		run_set_region_4(sc, RT2860_WCID_ENTRY(wcid), 0, 8);
 	}
 
-	k->wk_pad = 0;
+	/* key deletion done */
+	clrbit(sc->cmdq_key_del, wcid);
 }
 
 /*
@@ -2308,8 +2305,13 @@ run_key_delete(struct ieee80211vap *vap, struct ieee80211_key *k)
 {
 	struct ieee80211com *ic = vap->iv_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	struct ieee80211_key *k0;
 	uint32_t i;
+	uint8_t wcid = k->wk_pad;
+
+	/* key_delete is in progress */
+	RUN_LOCK(sc);
+	setbit(sc->cmdq_key_del, wcid);
+	RUN_UNLOCK(sc);
 
 	/*
 	 * When called back, key might be gone. So, make a copy
@@ -2320,16 +2322,15 @@ run_key_delete(struct ieee80211vap *vap, struct ieee80211_key *k)
 	i = RUN_CMDQ_GET(&sc->cmdq_store);
 	DPRINTF("cmdq_store=%d\n", i);
 	sc->cmdq[i].func = run_key_delete_cb;
-	sc->cmdq[i].arg0 = NULL;
+	sc->cmdq[i].arg0 = &sc->cmdq[i];
 	sc->cmdq[i].arg1 = sc;
-	k0 = &sc->cmdq[i].key;
-	k0->wk_flags = k->wk_flags;
-	k0->wk_keyix = k->wk_keyix;
+	sc->cmdq[i].cmdq_wk_flags = k->wk_flags;
+	sc->cmdq[i].cmdq_wk_keyix = k->wk_keyix;
 	/* matching wcid was written to wk_pad in run_key_set() */
-	k0->wk_pad = k->wk_pad;
+	sc->cmdq[i].cmdq_wk_pad = k->wk_pad;
 	ieee80211_runtask(ic, &sc->cmdq_task);
-	return (1);	/* return fake success */
 
+	return (1);	/* return fake success */
 }
 
 static void
@@ -2548,7 +2549,7 @@ run_newassoc(struct ieee80211_node *ni, int isnew)
 		uint32_t cnt = RUN_CMDQ_GET(&sc->cmdq_store);
 		DPRINTF("cmdq_store=%d\n", cnt);
 		sc->cmdq[cnt].func = run_newassoc_cb;
-		sc->cmdq[cnt].arg0 = NULL;
+		sc->cmdq[cnt].arg0 = &sc->cmdq[cnt];
 		sc->cmdq[cnt].arg1 = ni;
 		sc->cmdq[cnt].cmdq_wcid = wcid;
 		ieee80211_runtask(ic, &sc->cmdq_task);
@@ -5483,14 +5484,7 @@ run_init_locked(struct run_softc *sc)
 	run_set_region_4(sc, RT2860_WCID_ENTRY(0), 0, 512);
 	/* clear WCID attribute table */
 	run_set_region_4(sc, RT2860_WCID_ATTR(0), 0, 8 * 32);
-
-	/* hostapd sets a key before init. So, don't clear it. */
-	if (sc->cmdq_key_set != RUN_CMDQ_GO) {
-		/* clear shared key table */
-		run_set_region_4(sc, RT2860_SKEY(0, 0), 0, 8 * 32);
-		/* clear shared key mode */
-		run_set_region_4(sc, RT2860_SKEY_MODE_0_7, 0, 4);
-	}
+	memset(sc->cmdq_key_del, 0, sizeof(sc->cmdq_key_del));
 
 	run_read(sc, RT2860_US_CYC_CNT, &tmp);
 	tmp = (tmp & ~0xff) | 0x1e;
@@ -5602,7 +5596,7 @@ run_stop(void *arg)
 	ifp->if_drv_flags &= ~(IFF_DRV_RUNNING | IFF_DRV_OACTIVE);
 
 	sc->ratectl_run = RUN_RATECTL_OFF;
-	sc->cmdq_run = sc->cmdq_key_set;
+	sc->cmdq_run = RUN_CMDQ_ABORT;
 
 	RUN_UNLOCK(sc);
 

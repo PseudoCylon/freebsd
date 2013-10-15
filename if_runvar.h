@@ -241,10 +241,10 @@ struct run_softc {
 #define RUN_CMDQ_MASQ	(RUN_CMDQ_MAX - 1)
 	struct run_cmdq			cmdq[RUN_CMDQ_MAX];
 	struct task			cmdq_task;
+	uint8_t				cmdq_key_del[8];
 	uint32_t			cmdq_store;
 	uint8_t				cmdq_exec;
 	uint8_t				cmdq_run;
-	uint8_t				cmdq_key_set;
 #define RUN_CMDQ_ABORT	0
 #define RUN_CMDQ_GO	1
 

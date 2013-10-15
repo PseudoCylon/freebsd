@@ -2524,7 +2524,7 @@ static void
 run_newassoc(struct ieee80211_node *ni, int isnew)
 {
 	struct run_node *rn = (void *)ni;
-	struct ieee80211_rateset *rs = &ni->ni_rates;
+	struct ieee80211_rateset *rs;
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct ieee80211com *ic = vap->iv_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;

@@ -171,6 +171,7 @@ struct run_softc {
 	device_t			sc_dev;
 	struct usb_device		*sc_udev;
 	struct ifnet			*sc_ifp;
+	uint8_t				wcid2ht[8];
 	uint16_t			wcid_stats[RT2870_WCID_MAX + 1][3];
 #define	RUN_TXCNT	0
 #define	RUN_SUCCESS	1
@@ -232,6 +233,7 @@ struct run_softc {
 
 	struct task                     ratectl_task;
 	struct usb_callout              ratectl_ch;
+	int				hz;
 	uint8_t				ratectl_run;
 #define RUN_RATECTL_OFF	0
 

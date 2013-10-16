@@ -371,7 +371,7 @@ static void	run_key_delete_cb(void *);
 static int	run_key_delete(struct ieee80211vap *, struct ieee80211_key *);
 static void	run_ratectl_to(void *);
 static void	run_ratectl_cb(void *, int);
-static void	run_drain_fifo(void *);
+static void	run_drain_fifo(struct run_softc *);
 static void	run_iter_func(void *, struct ieee80211_node *);
 static void	run_newassoc_cb(void *);
 static void	run_newassoc(struct ieee80211_node *, int);
@@ -910,7 +910,6 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 
 	sc->cmdq_run = RUN_CMDQ_GO;
 
-#if 0
 	/*
 	 * Poking register on every Tx is expensive.
 	 * So, collect stats 10 times/sec.
@@ -919,10 +918,9 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	sc->hz = (vap->iv_opmode != IEEE80211_M_IBSS &&
 	    vap->iv_opmode != IEEE80211_M_STA) ?
 	    hz / 10 : hz;
-#endif
 
-	DPRINTF("rvp_id=%d bmap=%x rvp_cnt=%d\n",
-	    rvp->rvp_id, sc->rvp_bmap, sc->rvp_cnt);
+	DPRINTF("rvp_id=%d bmap=%x rvp_cnt=%d, hz=%d\n",
+	    rvp->rvp_id, sc->rvp_bmap, sc->rvp_cnt, sc->hz);
 
 	return (vap);
 }
@@ -2011,7 +2009,7 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 	/* restart amrr for running VAPs */
 	if ((sc->ratectl_run = ratectl) && restart_ratectl)
-		usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);
+		usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
 
 	RUN_UNLOCK(sc);
 	IEEE80211_LOCK(ic);
@@ -2360,45 +2358,57 @@ run_ratectl_cb(void *arg, int pending)
 	struct run_softc *sc = arg;
 	struct ieee80211com *ic = sc->sc_ifp->if_l2com;
 	struct ieee80211vap *vap = TAILQ_FIRST(&ic->ic_vaps);
-	uint16_t tmp[6];
+	static uint8_t cnt;
 
 	if (vap == NULL)
 		return;
 
-	if (sc->rvp_cnt <= 1 && vap->iv_opmode == IEEE80211_M_STA)
+	if (sc->rvp_cnt <= 1 &&
+	    (vap->iv_opmode == IEEE80211_M_STA || vap->iv_opmode == IEEE80211_M_STA))
 		run_iter_func(sc, vap->iv_bss);
 	else {
-		/*
-		 * run_reset_livelock() doesn't do anything with AMRR,
-		 * but Ralink wants us to call it every 1 sec. So, we
-		 * piggyback here rather than creating another callout.
-		 * Livelock may occur only in HOSTAP or IBSS mode
-		 * (when h/w is sending beacons).
-		 */
 		RUN_LOCK(sc);
-		run_reset_livelock(sc);
-		/* just in case, there are some stats to drain */
 		run_drain_fifo(sc);
-		RUN_UNLOCK(sc);
-		ieee80211_iterate_nodes(&ic->ic_sta, run_iter_func, sc);
+		if(++cnt < 10)
+			RUN_UNLOCK(sc);
+		else {
+			cnt = 0;
+			/*
+			 * run_reset_livelock() doesn't do anything with AMRR,
+			 * but Ralink wants us to call it every 1 sec. So, we
+			 * piggyback here rather than creating another callout.
+			 * Livelock may occur only in HOSTAP or IBSS mode
+			 * (when h/w is sending beacons).
+			 */
+			run_reset_livelock(sc);
+			RUN_UNLOCK(sc);
+			ieee80211_iterate_nodes(&ic->ic_sta, run_iter_func, sc);
+		}
 	}
 
 	RUN_LOCK(sc);
-	run_read_region_1(sc, RT2860_RX_STA_CNT0, (uint8_t *)tmp,
-	    sizeof(uint32_t) * 3);
-	DPRINTFN(2, "Rx Err crc=%u phy=%u cca=%u plpc=%u dup=%u ovfl=%u\n",
-	    le16toh(tmp[0]), le16toh(tmp[1]), le16toh(tmp[2]),
-	    le16toh(tmp[3]), le16toh(tmp[4]), le16toh(tmp[5]));
+
+#ifdef	RUN_DEBUG
+	if (cnt == 0) {
+		uint16_t tmp[6];
+
+		run_read_region_1(sc, RT2860_RX_STA_CNT0, (uint8_t *)tmp,
+		    sizeof(tmp));
+
+		DPRINTFN(2, "Rx Err crc=%u phy=%u cca=%u plpc=%u dup=%u ovfl=%u\n",
+		    le16toh(tmp[0]), le16toh(tmp[1]), le16toh(tmp[2]),
+		    le16toh(tmp[3]), le16toh(tmp[4]), le16toh(tmp[5]));
+	}
+#endif	/* RUN_DEBUG */
 
 	if(sc->ratectl_run != RUN_RATECTL_OFF)
-		usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);
+		usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
 	RUN_UNLOCK(sc);
 }
 
 static void
-run_drain_fifo(void *arg)
+run_drain_fifo(struct run_softc *sc)
 {
-	struct run_softc *sc = arg;
 	struct ifnet *ifp = sc->sc_ifp;
 	uint32_t stat;
 	uint16_t (*wstat)[3];
@@ -2444,7 +2454,9 @@ run_drain_fifo(void *arg)
 		 */
 		mcs = (stat >> RT2860_TXQ_MCS_SHIFT) & 0x7f;
 		pid = (stat >> RT2860_TXQ_PID_SHIFT) & 0xf;
-		if ((retry = pid -1 - mcs) > 0) {
+		if (isset(sc->wcid2ht, wcid))
+			mcs = rt2860_rates[mcs + 12].pid;
+		if ((retry = pid - 1 - mcs) > 0) {
 			(*wstat)[RUN_TXCNT] += retry;
 			(*wstat)[RUN_RETRY] += retry;
 		}
@@ -2530,6 +2542,10 @@ run_newassoc_cb(void *arg)
 	    ni->ni_macaddr, IEEE80211_ADDR_LEN);
 
 	memset(&(sc->wcid_stats[wcid]), 0, sizeof(sc->wcid_stats[wcid]));
+	if (ni->ni_flags & IEEE80211_NODE_HT)
+		setbit(sc->wcid2ht, wcid);
+	else
+		clrbit(sc->wcid2ht, wcid);
 
 	rxampdu = MS(ni->ni_htparam, IEEE80211_HTCAP_MAXRXAMPDU);
 	DPRINTF("sc_rxampdu=%u ni_rxampdu=%u\n", sc->rxampdu, rxampdu);
@@ -3337,32 +3353,8 @@ run_tx(struct run_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 		 */
 		if (vap->iv_opmode == IEEE80211_M_HOSTAP ||
 		    vap->iv_opmode == IEEE80211_M_MBSS || sc->rvp_cnt > 1) {
-			flags |= ((rt2860_rates[ridx].mcs + 1) & 0xf) <<
+			flags |= (rt2860_rates[ridx].pid + 1) <<
 			 RT2860_TX_PID_SHIFT;
-
-			/*
-			 * Unlike PCI based devices, we don't get any interrupt from
-			 * USB devices, so we simulate FIFO-is-full interrupt here.
-			 * Ralink recomends to drain FIFO stats every 100 ms, but 16 slots
-			 * quickly get fulled. To prevent overflow, increment a counter on
-			 * every FIFO stat request, so we know how many slots are left.
-			 * We do this only in HOSTAP or multiple vap mode since FIFO stats
-			 * are used only in those modes.
-			 * We just drain stats. AMRR gets updated every 1 sec by
-			 * run_ratectl_cb() via callout.
-			 * Call it early. Otherwise overflow.
-			 */
-			if (sc->fifo_cnt++ == 10) {
-				/*
-				 * With multiple vaps or if_bridge, if_start() is called
-				 * with a non-sleepable lock, tcpinp. So, need to defer.
-				 */
-				uint32_t i = RUN_CMDQ_GET(&sc->cmdq_store);
-				DPRINTFN(6, "cmdq_store=%d\n", i);
-				sc->cmdq[i].func = run_drain_fifo;
-				sc->cmdq[i].arg0 = sc;
-				ieee80211_runtask(ni->ni_ic, &sc->cmdq_task);
-			}
 		}
 	}
 

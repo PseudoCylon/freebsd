@@ -79,6 +79,7 @@ typedef	pt_entry_t *pd_entry_t;
 #define	TLBLO_PFN_MASK		0x3FFFFFFC0ULL
 #else
 #define	TLBLO_SWBITS_SHIFT	(29)
+#define	TLBLO_SWBITS_CLEAR_SHIFT	(3)
 #define	TLBLO_PFN_MASK		(0x1FFFFFC0)
 #endif
 #define	TLBLO_PFN_SHIFT		(6)

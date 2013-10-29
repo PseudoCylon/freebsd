@@ -422,7 +422,8 @@ static void	run_updateslot_cb(void *);
 static void	run_update_mcast(struct ifnet *);
 static int8_t	run_rssi2dbm(struct run_softc *, uint8_t, uint8_t);
 static void	run_set_tid_cb(void *);
-static int	run_send_action(struct ieee80211_node *, int, int, void *);
+static int	run_addba_request(struct ieee80211_node *,
+		    struct ieee80211_tx_ampdu *, int, int, int);
 static int	run_addba_response(struct ieee80211_node *,
 		    struct ieee80211_tx_ampdu *, int, int, int);
 static void	run_addba_stop(struct ieee80211_node *,
@@ -738,8 +739,8 @@ run_attach(device_t self)
 	ic->ic_vap_delete = run_vap_delete;
 
 	if (sc->rf_rev != RT3070_RF_2020) {
-		sc->sc_send_action = ic->ic_send_action;
-		ic->ic_send_action = run_send_action;
+		sc->sc_addba_request = ic->ic_addba_request;
+		ic->ic_addba_request = run_addba_request;
 		sc->sc_addba_response = ic->ic_addba_response;
 		ic->ic_addba_response = run_addba_response;
 		sc->sc_addba_stop = ic->ic_addba_stop;
@@ -886,8 +887,8 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	vap->iv_newstate = run_newstate;
 
 	if (sc->rf_rev != RT3070_RF_2020) {
-		vap->iv_ampdu_rxmax = IEEE80211_HTCAP_MAXRXAMPDU_8K;
-		vap->iv_ampdu_density = IEEE80211_HTCAP_MPDUDENSITY_16;
+		vap->iv_ampdu_rxmax = IEEE80211_HTCAP_MAXRXAMPDU_32K;
+		vap->iv_ampdu_density = IEEE80211_HTCAP_MPDUDENSITY_NA;
 	}
 
 	ieee80211_ratectl_init(vap);
@@ -1901,6 +1902,15 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	case IEEE80211_S_RUN:
 		/* turn link LED off */
 		run_set_leds(sc, RT2860_LED_RADIO);
+
+		break;
+	case IEEE80211_S_INIT:
+		/* reset max ampdu value */
+		sc->rxampdu = IEEE80211_HTCAP_MAXRXAMPDU_64K;
+		run_read(sc, RT2860_MAX_LEN_CFG, &tmp);
+		tmp |= (RT2860_MAX_PSDU_LEN64K << RT2860_MAX_PSDU_LEN_SHIFT);
+		run_write(sc, RT2860_MAX_LEN_CFG, tmp);
+
 		break;
 	default:
 		break;
@@ -2510,6 +2520,8 @@ run_newassoc_cb(void *arg)
 	struct run_cmdq *cmdq = arg;
 	struct ieee80211_node *ni = cmdq->arg1;
 	struct run_softc *sc = ni->ni_vap->iv_ic->ic_ifp->if_softc;
+	uint32_t tmp;
+	uint8_t rxampdu;
 	uint8_t wcid = cmdq->cmdq_wcid;
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
@@ -2518,6 +2530,16 @@ run_newassoc_cb(void *arg)
 	    ni->ni_macaddr, IEEE80211_ADDR_LEN);
 
 	memset(&(sc->wcid_stats[wcid]), 0, sizeof(sc->wcid_stats[wcid]));
+
+	rxampdu = MS(ni->ni_htparam, IEEE80211_HTCAP_MAXRXAMPDU);
+	DPRINTF("sc_rxampdu=%u ni_rxampdu=%u\n", sc->rxampdu, rxampdu);
+	if (sc->rxampdu > rxampdu) {
+		sc->rxampdu = rxampdu;
+		run_read(sc, RT2860_MAX_LEN_CFG, &tmp);
+		tmp &= ~(3 << RT2860_MAX_PSDU_LEN_SHIFT);
+		tmp |= (rxampdu << RT2860_MAX_PSDU_LEN_SHIFT);
+		run_write(sc, RT2860_MAX_LEN_CFG, tmp);
+	}
 }
 
 static void
@@ -3217,7 +3239,8 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 		txwi->flags |=
 		    MS(ni->ni_htparam, IEEE80211_HTCAP_MPDUDENSITY) <<
 		    RT2860_TX_MPDU_DSITY_SHIFT | RT2860_TX_AMPDU;
-		txwi->xflags = (ni->ni_tx_ampdu[qid].txa_wnd) <<
+		/* 0x00 = 1 agg, 0x3f = 64 agg */
+		txwi->xflags = (ni->ni_tx_ampdu[qid].txa_wnd - 1) <<
 		    RT2860_TX_BAWINSIZE_SHIFT;
 		ni->ni_txseqs[tid] = IEEE80211_SEQ_INC(ni->ni_txseqs[tid]);
 		*(uint16_t *)wh->i_seq =
@@ -4486,29 +4509,20 @@ run_set_tid_cb(void *arg)
 }
 
 static int
-run_send_action(struct ieee80211_node *ni, int category, int action, void *arg)
+run_addba_request(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap,
+    int dialogtoken, int baparamset, int batimeout)
 {
 	struct run_softc *sc = ni->ni_ic->ic_ifp->if_softc;
-	uint32_t mac = sc->mac_ver << 16 | sc->mac_rev;
-	int buf;
-	uint16_t *args = arg;
+	//uint32_t mac = sc->mac_ver << 16 | sc->mac_rev;
+	int ret;
 
-	DPRINTF("\n");
+	ret = sc->sc_addba_request(ni, tap, dialogtoken, baparamset, batimeout);
 
-	if (action == IEEE80211_ACTION_BA_ADDBA_RESPONSE ||
-	    action == IEEE80211_ACTION_BA_ADDBA_REQUEST) {
-		if (mac >= 0x28830300 && mac < 0x30700200)
-			buf = 32;
-		else if (mac >= 0x2870200)
-			buf = 8;	/* without encryption buf = 14 */
-		else
-			buf = 8;
+	//tap->txa_wnd = min(tap->txa_wnd, mac == 0x28720200 ? 13 : 7);
 
-		args[2] &= ~IEEE80211_BAPS_BUFSIZ;
-		args[2] |= SM(buf, IEEE80211_BAPS_BUFSIZ);
-	}
+	DPRINTF("txa_wnd=%u\n", tap->txa_wnd);
 
-	return (sc->sc_send_action(ni, category, action, arg));
+	return (ret);
 }
 
 static int
@@ -4517,17 +4531,16 @@ run_addba_response(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap,
 {
 	struct ieee80211com *ic = ni->ni_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	int buf, ret;
+	//uint32_t mac = sc->mac_ver << 16 | sc->mac_rev;
+	int ret;
 
 	DPRINTF("\n");
-
-	buf = MIN(MS(baparamset, IEEE80211_BAPS_BUFSIZ), tap->txa_wnd);
-	baparamset &= ~IEEE80211_BAPS_BUFSIZ;
-	baparamset |= SM(buf, IEEE80211_BAPS_BUFSIZ);
 
 	ret = sc->sc_addba_response(ni, tap, status, baparamset, batimeout);
 
 	if (status == IEEE80211_STATUS_SUCCESS) {
+		//tap->txa_wnd = min(tap->txa_wnd, mac == 0x28720200 ? 13 : 7);
+		DPRINTF("txa_wnd=%u\n", tap->txa_wnd);
 		ieee80211_send_bar(ni, tap,
 		    ni->ni_txseqs[MS(baparamset, IEEE80211_BAPS_TID)]);
 	} else {

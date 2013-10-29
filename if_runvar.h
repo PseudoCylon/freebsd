@@ -179,8 +179,6 @@ struct run_softc {
 	int				(*sc_srom_read)(struct run_softc *,
 					    uint16_t, uint16_t *);
 
-	int				(*sc_send_action)(struct ieee80211_node *, int,
-					    int, void *);
 	int				(*sc_addba_request)(struct ieee80211_node *,
 					    struct ieee80211_tx_ampdu *, int, int, int);
 	int				(*sc_addba_response)(struct ieee80211_node *,
@@ -196,6 +194,7 @@ struct run_softc {
 	uint8_t				freq;
 	uint8_t				ntxchains;
 	uint8_t				nrxchains;
+	uint8_t				rxampdu;
 
 	uint8_t				bbp25;
 	uint8_t				bbp26;

@@ -4620,7 +4620,7 @@ run_rssi2dbm(struct run_softc *sc, uint8_t rssi, uint8_t rxchain)
 	int delta;
 
 	if (IEEE80211_IS_CHAN_5GHZ(c)) {
-		u_int chan = ieee80211_chan2ieee(ic, c);
+		uint32_t chan = ieee80211_chan2ieee(ic, c);
 		delta = sc->rssi_5ghz[rxchain];
 
 		/* determine channel group */

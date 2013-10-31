@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2012 NetApp, Inc.
+ * Copyright (c) 2013 Ian Lepore <ian@freebsd.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -11,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY NETAPP, INC ``AS IS'' AND
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL NETAPP, INC OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
  * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
@@ -26,9 +26,16 @@
  * $FreeBSD$
  */
 
-#ifndef _ACPI_H_
-#define _ACPI_H_
+#ifndef	IMX6_CCMREG_H
+#define	IMX6_CCMREG_H
 
-int	acpi_build(struct vmctx *ctx, int ncpu);
+#define	CCM_CCGR1		0x06C
+#define	CCM_CCGR2		0x070
+#define	CCM_CCGR3		0x074
+#define	CCM_CCGR4		0x078
+#define	CCM_CCGR5		0x07C
+#define	CCM_CCGR6		0x080
+#define	CCM_CMEOR		0x088
+                  
 
-#endif /* _ACPI_H_ */
+#endif

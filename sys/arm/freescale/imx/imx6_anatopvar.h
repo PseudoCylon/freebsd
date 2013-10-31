@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2012 Eitan Adler
+ * Copyright (c) 2013 Ian Lepore <ian@freebsd.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,36 +26,18 @@
  * $FreeBSD$
  */
 
-#include <sys/cdefs.h>
+#ifndef	IMX6_ANATOPVAR_H
+#define	IMX6_ANATOPVAR_H
 
-#include "lib.h"
-#include <err.h>
+/*
+ * All registers controlling various analog aspects of the SoC (such as PLLs or
+ * voltage regulators or USB VBUS detection) are gathered together under the
+ * anatop device (because of newbus hierarchical resource management), but other
+ * drivers such as CMM or USBPHY need access to these registers.  These
+ * functions let them have at the hardware directly.  No effort is made by these
+ * functions to mediate concurrent access.
+ */
+uint32_t imx6_anatop_read_4(bus_size_t _offset);
+void imx6_anatop_write_4(bus_size_t _offset, uint32_t _value);
 
-static const char message[] = "You appear to be using the newer pkg(1) tool on \
-this system for package management, rather than the legacy package \
-management tools (pkg_*).  The legacy tools should no longer be used on \
-this system.";
-
-void warnpkgng(void)
-{
-	char pkgngpath[MAXPATHLEN + 1];
-	char *pkgngdir;
-	char *dontwarn;
-	int rc;
-
-	dontwarn = getenv("PKG_OLD_NOWARN");
-	if (dontwarn != NULL)
-		return;
-	pkgngdir = getenv("PKG_DBDIR");
-	if (pkgngdir == NULL)
-		pkgngdir = "/var/db/pkg";
-
-	rc = snprintf(pkgngpath, sizeof(pkgngpath), "%s/local.sqlite", pkgngdir);
-	if ((size_t)rc >= sizeof(pkgngpath)) {
-		warnx("path too long: %s/local.sqlite", pkgngdir);
-		return;
-	}
-
-	if (access(pkgngpath, F_OK) == 0)
-		warnx(message);
-}
+#endif

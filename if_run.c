@@ -4276,6 +4276,7 @@ run_update_beacon_cb(void *arg)
 	struct run_softc *sc = ic->ic_ifp->if_softc;
 	struct rt2860_txwi txwi;
 	struct mbuf *m;
+	uint32_t tmp;
 	uint8_t ridx;
 
 	if (vap->iv_bss->ni_chan == IEEE80211_CHAN_ANYC)
@@ -4304,14 +4305,19 @@ run_update_beacon_cb(void *arg)
 	txwi.phy = htole16(rt2860_rates[ridx].mcs);
 	if (rt2860_rates[ridx].phy == IEEE80211_T_OFDM)
 	        txwi.phy |= htole16(RT2860_PHY_OFDM);
-	txwi.txop = RT2860_TX_TXOP_HT;
+	txwi.txop = RT2860_TX_TXOP_BACKOFF;
 	txwi.flags = RT2860_TX_TS;
 	txwi.xflags = RT2860_TX_NSEQ;
 
+	/* stop beacon Tx while updating, beacon may corrupt */
+	run_read(sc, RT2860_BCN_TIME_CFG, &tmp);
+	run_write(sc, RT2860_BCN_TIME_CFG, tmp & ~RT2860_BCN_TX_EN);
+	run_set_region_4(sc, RT2860_BCN_BASE(rvp->rvp_id), 0, 512);
 	run_write_region_1(sc, RT2860_BCN_BASE(rvp->rvp_id),
 	    (uint8_t *)&txwi, sizeof txwi);
 	run_write_region_1(sc, RT2860_BCN_BASE(rvp->rvp_id) + sizeof txwi,
 	    mtod(m, uint8_t *), (m->m_pkthdr.len + 1) & ~1);	/* roundup len */
+	run_write(sc, RT2860_BCN_TIME_CFG, tmp);
 
 	return;
 }

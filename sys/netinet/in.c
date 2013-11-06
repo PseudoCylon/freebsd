@@ -72,7 +72,7 @@ static int in_mask2len(struct in_addr *);
 static void in_len2mask(struct in_addr *, int);
 static int in_lifaddr_ioctl(struct socket *, u_long, caddr_t,
 	struct ifnet *, struct thread *);
-static int in_aifaddr_ioctl(caddr_t, struct ifnet *, struct thread *);
+static int in_aifaddr_ioctl(u_long, caddr_t, struct ifnet *, struct thread *);
 static int in_difaddr_ioctl(caddr_t, struct ifnet *, struct thread *);
 
 static void	in_socktrim(struct sockaddr_in *);
@@ -237,6 +237,7 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 {
 	struct ifreq *ifr = (struct ifreq *)data;
 	struct sockaddr_in *addr = (struct sockaddr_in *)&ifr->ifr_addr;
+	struct ifaddr *ifa;
 	struct in_ifaddr *ia;
 	int error;
 
@@ -258,9 +259,10 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 		error = in_difaddr_ioctl(data, ifp, td);
 		sx_xunlock(&in_control_sx);
 		return (error);
+	case OSIOCAIFADDR:	/* 9.x compat */
 	case SIOCAIFADDR:
 		sx_xlock(&in_control_sx);
-		error = in_aifaddr_ioctl(data, ifp, td);
+		error = in_aifaddr_ioctl(cmd, data, ifp, td);
 		sx_xunlock(&in_control_sx);
 		return (error);
 	case SIOCALIFADDR:
@@ -279,19 +281,25 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 		return ((*ifp->if_ioctl)(ifp, cmd, data));
 	}
 
+	if (addr->sin_addr.s_addr != INADDR_ANY &&
+	    prison_check_ip4(td->td_ucred, &addr->sin_addr) != 0)
+		return (EADDRNOTAVAIL);
+
 	/*
-	 * Find address for this interface, if it exists.
+	 * For SIOCGIFADDR, pick the first address.  For the rest of
+	 * ioctls, try to find specified address.
 	 */
-	IN_IFADDR_RLOCK();
-	LIST_FOREACH(ia, INADDR_HASH(addr->sin_addr.s_addr), ia_hash) {
-		if (ia->ia_ifp == ifp &&
-		    ia->ia_addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
-		    prison_check_ip4(td->td_ucred, &addr->sin_addr) == 0)
+	IF_ADDR_RLOCK(ifp);
+	TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+		ia = (struct in_ifaddr *)ifa;
+		if (cmd == SIOCGIFADDR || addr->sin_addr.s_addr == INADDR_ANY)
+			break;
+		if (ia->ia_addr.sin_addr.s_addr == addr->sin_addr.s_addr)
 			break;
 	}
 
-	if (ia == NULL) {
-		IN_IFADDR_RUNLOCK();
+	if (ifa == NULL) {
+		IF_ADDR_RUNLOCK(ifp);
 		return (EADDRNOTAVAIL);
 	}
 
@@ -322,20 +330,20 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 		break;
 	}
 
-	IN_IFADDR_RUNLOCK();
+	IF_ADDR_RUNLOCK(ifp);
 
 	return (error);
 }
 
 static int
-in_aifaddr_ioctl(caddr_t data, struct ifnet *ifp, struct thread *td)
+in_aifaddr_ioctl(u_long cmd, caddr_t data, struct ifnet *ifp, struct thread *td)
 {
 	const struct in_aliasreq *ifra = (struct in_aliasreq *)data;
 	const struct sockaddr_in *addr = &ifra->ifra_addr;
 	const struct sockaddr_in *broadaddr = &ifra->ifra_broadaddr;
 	const struct sockaddr_in *mask = &ifra->ifra_mask;
 	const struct sockaddr_in *dstaddr = &ifra->ifra_dstaddr;
-	const int vhid = ifra->ifra_vhid;
+	const int vhid = (cmd == SIOCAIFADDR) ? ifra->ifra_vhid : 0;
 	struct ifaddr *ifa;
 	struct in_ifaddr *ia;
 	bool iaIsFirst;

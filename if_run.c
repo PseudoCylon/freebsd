@@ -3286,7 +3286,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 			    rt2860_rates[ctl_ridx].ht40_dur :
 			    rt2860_rates[ctl_ridx].ht20_dur;
 			dur = mcs & RT2860_PHY_SGI ? dur * 4 : (dur * 18 + 4) / 5;
-			dur += (32 + 4 * ridx < 20 ? 1 : ridx < 28 ? 2 : 3);
+			dur += (32 + 4 * (ridx < 20 ? 1 : ridx < 28 ? 2 : 3));
 		} else {
 			dur = ic->ic_flags & IEEE80211_F_SHPREAMBLE ?
 			    rt2860_rates[ctl_ridx].sp_ack_dur :

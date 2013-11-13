@@ -4380,7 +4380,8 @@ run_updateprot_cb(void *arg)
 
 	htprot = ic->ic_curhtprotmode & IEEE80211_HTINFO_OPMODE;
 	/* NB: IEEE80211_HTINFO_NONGF_PRESENT not yet used */
-	sc->nongf = ic->ic_curhtprotmode & IEEE80211_HTINFO_NONGF_PRESENT;
+	sc->nongf = ic->ic_curhtprotmode &
+	    (IEEE80211_HTINFO_NONGF_PRESENT | IEEE80211_HTINFO_NONHT_PRESENT);
 	if (htprot == IEEE80211_HTINFO_OPMODE_PROTOPT) {
 		htprot =
 		    ic->ic_curhtprotmode & IEEE80211_HTINFO_NONHT_PRESENT ?

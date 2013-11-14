@@ -3581,7 +3581,7 @@ run_select_chan_group(struct run_softc *sc, int group)
 	run_bbp_write(sc, 62, 0x37 - sc->lna[group]);
 	run_bbp_write(sc, 63, 0x37 - sc->lna[group]);
 	run_bbp_write(sc, 64, 0x37 - sc->lna[group]);
-	if (sc->mac_ver < 0x5390)
+	if (sc->mac_ver < 0x3572)
 		run_bbp_write(sc, 86, 0x00);
 
 	if (group == 0) {

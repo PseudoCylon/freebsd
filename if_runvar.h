@@ -41,7 +41,7 @@
 #define RUN_TX_TIMEOUT	5000	/* ms */
 
 /* Tx ring count was 8/endpoint, now 32 for all 4 (or 6) endpoints. */
-#define RUN_TX_RING_COUNT	32
+#define RUN_TX_RING_COUNT	64
 #define RUN_RX_RING_COUNT	1
 
 #define RT2870_WCID_MAX		64

@@ -1875,6 +1875,7 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 {
 	const struct ieee80211_txparam *tp;
 	struct ieee80211com *ic = vap->iv_ic;
+	struct ieee80211_node *ni = NULL;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
 	struct run_vap *rvp = RUN_VAP(vap);
 	enum ieee80211_state ostate;
@@ -1973,8 +1974,6 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		}
 
 		if (vap->iv_opmode != IEEE80211_M_MONITOR) {
-			struct ieee80211_node *ni;
-
 			if (ic->ic_bsschan == IEEE80211_CHAN_ANYC) {
 				RUN_UNLOCK(sc);
 				IEEE80211_LOCK(ic);
@@ -1984,10 +1983,13 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			run_enable_mrr(sc);
 			run_set_txpreamble(sc);
 			run_set_basicrates(sc);
+			/*
+			 * call ieee80211_free_node() after RUN_UNLOCK()
+			 * to prevent LOR
+			 */
 			ni = ieee80211_ref_node(vap->iv_bss);
 			IEEE80211_ADDR_COPY(sc->sc_bssid, ni->ni_bssid);
 			run_set_bssid(sc, ni->ni_bssid);
-			ieee80211_free_node(ni);
 			run_enable_tsf_sync(sc);
 
 			/* enable automatic rate adaptation */
@@ -2012,6 +2014,10 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
 
 	RUN_UNLOCK(sc);
+
+	if (ni != NULL)
+		ieee80211_free_node(ni);
+
 	IEEE80211_LOCK(ic);
 
 	return (rvp->newstate(vap, nstate, arg));
@@ -2946,9 +2952,6 @@ run_tx_free(struct run_endpoint_queue *pq,
 			data->ni = NULL;
 		}
 	}
-
-	STAILQ_INSERT_TAIL(&pq->tx_fh, data, next);
-	pq->tx_nfree++;
 }
 
 static void
@@ -2957,15 +2960,15 @@ run_bulk_tx_callbackN(struct usb_xfer *xfer, usb_error_t error, u_int index)
 	struct run_softc *sc = usbd_xfer_softc(xfer);
 	struct ifnet *ifp = sc->sc_ifp;
 	struct ieee80211com *ic = ifp->if_l2com;
-	struct run_tx_data *data;
+	struct run_tx_data *data, *tx_free[3];
 	struct ieee80211vap *vap = NULL;
 	struct usb_page_cache *pc;
 	struct run_endpoint_queue *pq = &sc->sc_epq[index];
 	struct mbuf *m;
 	usb_frlength_t size;
-	int actlen;
-	int sumlen;
+	int actlen, sumlen, i;
 
+	memset(tx_free, 0, sizeof(tx_free));
 	usbd_xfer_status(xfer, &actlen, &sumlen, NULL, NULL);
 
 	switch (USB_GET_STATE(xfer)) {
@@ -2973,10 +2976,7 @@ run_bulk_tx_callbackN(struct usb_xfer *xfer, usb_error_t error, u_int index)
 		DPRINTFN(11, "transfer complete: %d "
 		    "bytes @ index %d\n", actlen, index);
 
-		data = usbd_xfer_get_priv(xfer);
-
-		run_tx_free(pq, data, 0);
-		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
+		data = tx_free[0] = usbd_xfer_get_priv(xfer);
 
 		usbd_xfer_set_priv(xfer, NULL);
 
@@ -2999,7 +2999,8 @@ tr_setup:
 
 			ifp->if_oerrors++;
 
-			run_tx_free(pq, data, 1);
+			KASSERT(tx_free[1] == NULL, ("multiple failure"));
+			tx_free[1] = data;
 
 			goto tr_setup;
 		}
@@ -3055,8 +3056,9 @@ tr_setup:
 		if (data != NULL) {
 			if(data->ni != NULL)
 				vap = data->ni->ni_vap;
-			run_tx_free(pq, data, error);
-			usbd_xfer_set_priv(xfer, NULL);
+
+			KASSERT(tx_free[2] == NULL, ("multiple failure"));
+			tx_free[2] = data;
 		}
 		if (vap == NULL)
 			vap = TAILQ_FIRST(&ic->ic_vaps);
@@ -3080,6 +3082,26 @@ tr_setup:
 			goto tr_setup;
 		}
 		break;
+	}
+
+	RUN_UNLOCK(sc);
+	for (i = 0; i < 3; i++) {
+		if (tx_free[i] == NULL)
+			continue;
+		/*
+		 * Call ieee80211_process_callback() and ieee80211_free_node()
+		 * without holding driver lock to prevent LOR.
+		 */
+		run_tx_free(pq, tx_free[i], i);
+	}
+	RUN_LOCK(sc);
+
+	for (i = 0; i < 3; i++) {
+		if (tx_free[i] == NULL)
+			continue;
+		STAILQ_INSERT_TAIL(&pq->tx_fh, tx_free[i], next);
+		pq->tx_nfree++;
+		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 	}
 }
 
@@ -4612,7 +4634,9 @@ run_bar_response(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap,
 	cmdq.cmdq_flags = status ? RUN_TID_DEL : RUN_TID_ADD;
 	cmdq.cmdq_wcid = wcid;
 
+	RUN_LOCK(sc);
 	run_set_tid_cb(&cmdq);
+	RUN_UNLOCK(sc);
 
 	sc->sc_bar_response(ni, tap, status);
 }

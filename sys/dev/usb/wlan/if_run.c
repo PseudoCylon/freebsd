@@ -1147,7 +1147,7 @@ fail:
 	return (error);
 }
 
-int
+static int
 run_reset(struct run_softc *sc)
 {
 	usb_device_request_t req;
@@ -1550,7 +1550,7 @@ run_get_rf(uint16_t rev)
 	return ("unknown");
 }
 
-int
+static int
 run_read_eeprom(struct run_softc *sc)
 {
 	int8_t delta_2ghz, delta_5ghz;
@@ -2649,7 +2649,7 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 	struct rt2870_rxd *rxd;
 	struct rt2860_rxwi *rxwi;
 	uint32_t flags;
-	uint16_t len, phy;
+	uint16_t len;
 	int rssi;
 	uint8_t ant;
 	int8_t nf, rssidb, rssidbm;
@@ -2727,6 +2727,7 @@ run_rx_frame(struct run_softc *sc, struct mbuf *m, uint32_t dmalen)
 
 	if (__predict_false(ieee80211_radiotap_active(ic))) {
 		struct run_rx_radiotap_header *tap = &sc->sc_rxtap;
+		uint16_t phy;
 
 		tap->wr_flags = 0;
 		tap->wr_chan_freq = htole16(ic->ic_curchan->ic_freq);
@@ -5606,7 +5607,7 @@ run_stop(void *arg)
 	tmp &= ~(RT2860_RX_DMA_EN | RT2860_TX_DMA_EN);
 	run_write(sc, RT2860_WPDMA_GLO_CFG, tmp);
 
-        for (ntries = 0; ntries < 100; ntries++) {
+	for (ntries = 0; ntries < 100; ntries++) {
 		if (run_read(sc, RT2860_WPDMA_GLO_CFG, &tmp) != 0)
 			return;
 		if ((tmp & (RT2860_TX_DMA_BUSY | RT2860_RX_DMA_BUSY)) == 0)

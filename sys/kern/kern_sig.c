@@ -38,7 +38,6 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_compat.h"
-#include "opt_kdtrace.h"
 #include "opt_ktrace.h"
 #include "opt_core.h"
 #include "opt_procdesc.h"
@@ -93,11 +92,11 @@ __FBSDID("$FreeBSD$");
 #define	ONSIG	32		/* NSIG for osig* syscalls.  XXX. */
 
 SDT_PROVIDER_DECLARE(proc);
-SDT_PROBE_DEFINE3(proc, kernel, , signal_send, signal-send, "struct thread *",
+SDT_PROBE_DEFINE3(proc, kernel, , signal__send, "struct thread *",
     "struct proc *", "int");
-SDT_PROBE_DEFINE2(proc, kernel, , signal_clear, signal-clear, "int",
+SDT_PROBE_DEFINE2(proc, kernel, , signal__clear, "int",
     "ksiginfo_t *");
-SDT_PROBE_DEFINE3(proc, kernel, , signal_discard, signal-discard,
+SDT_PROBE_DEFINE3(proc, kernel, , signal__discard,
     "struct thread *", "struct proc *", "int");
 
 static int	coredump(struct thread *);
@@ -1254,7 +1253,7 @@ kern_sigtimedwait(struct thread *td, sigset_t waitset, ksiginfo_t *ksi,
 		reschedule_signals(p, new_block, 0);
 
 	if (error == 0) {
-		SDT_PROBE(proc, kernel, , signal_clear, sig, ksi, 0, 0, 0);
+		SDT_PROBE(proc, kernel, , signal__clear, sig, ksi, 0, 0, 0);
 
 		if (ksi->ksi_code == SI_TIMER)
 			itimer_accept(p, ksi->ksi_timerid, ksi);
@@ -2063,7 +2062,7 @@ tdsendsignal(struct proc *p, struct thread *td, int sig, ksiginfo_t *ksi)
 	} else
 		sigqueue = &td->td_sigqueue;
 
-	SDT_PROBE(proc, kernel, , signal_send, td, p, sig, 0, 0 );
+	SDT_PROBE(proc, kernel, , signal__send, td, p, sig, 0, 0 );
 
 	/*
 	 * If the signal is being ignored,
@@ -2074,7 +2073,7 @@ tdsendsignal(struct proc *p, struct thread *td, int sig, ksiginfo_t *ksi)
 	 */
 	mtx_lock(&ps->ps_mtx);
 	if (SIGISMEMBER(ps->ps_sigignore, sig)) {
-		SDT_PROBE(proc, kernel, , signal_discard, td, p, sig, 0, 0 );
+		SDT_PROBE(proc, kernel, , signal__discard, td, p, sig, 0, 0 );
 
 		mtx_unlock(&ps->ps_mtx);
 		if (ksi && (ksi->ksi_flags & KSI_INS))
@@ -2959,7 +2958,7 @@ sigparent(struct proc *p, int reason, int status)
 }
 
 static void
-childproc_jobstate(struct proc *p, int reason, int status)
+childproc_jobstate(struct proc *p, int reason, int sig)
 {
 	struct sigacts *ps;
 
@@ -2979,7 +2978,7 @@ childproc_jobstate(struct proc *p, int reason, int status)
 	mtx_lock(&ps->ps_mtx);
 	if ((ps->ps_flag & PS_NOCLDSTOP) == 0) {
 		mtx_unlock(&ps->ps_mtx);
-		sigparent(p, reason, status);
+		sigparent(p, reason, sig);
 	} else
 		mtx_unlock(&ps->ps_mtx);
 }
@@ -2987,6 +2986,7 @@ childproc_jobstate(struct proc *p, int reason, int status)
 void
 childproc_stopped(struct proc *p, int reason)
 {
+	/* p_xstat is a plain signal number, not a full wait() status here. */
 	childproc_jobstate(p, reason, p->p_xstat);
 }
 
@@ -3000,13 +3000,15 @@ void
 childproc_exited(struct proc *p)
 {
 	int reason;
-	int status = p->p_xstat; /* convert to int */
+	int xstat = p->p_xstat; /* convert to int */
+	int status;
 
-	reason = CLD_EXITED;
-	if (WCOREDUMP(status))
-		reason = CLD_DUMPED;
-	else if (WIFSIGNALED(status))
-		reason = CLD_KILLED;
+	if (WCOREDUMP(xstat))
+		reason = CLD_DUMPED, status = WTERMSIG(xstat);
+	else if (WIFSIGNALED(xstat))
+		reason = CLD_KILLED, status = WTERMSIG(xstat);
+	else
+		reason = CLD_EXITED, status = WEXITSTATUS(xstat);
 	/*
 	 * XXX avoid calling wakeup(p->p_pptr), the work is
 	 * done in exit1().

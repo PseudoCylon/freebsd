@@ -38,7 +38,6 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_compat.h"
-#include "opt_kdtrace.h"
 #include "opt_ktrace.h"
 #include "opt_procdesc.h"
 
@@ -94,7 +93,7 @@ dtrace_execexit_func_t	dtrace_fasttrap_exit;
 #endif
 
 SDT_PROVIDER_DECLARE(proc);
-SDT_PROBE_DEFINE1(proc, kernel, , exit, exit, "int");
+SDT_PROBE_DEFINE1(proc, kernel, , exit, "int");
 
 /* Hook for NFS teardown procedure. */
 void (*nlminfo_release_p)(struct proc *p);
@@ -974,16 +973,19 @@ proc_to_reap(struct thread *td, struct proc *p, idtype_t idtype, id_t id,
 		 *  This is still a rough estimate.  We will fix the
 		 *  cases TRAPPED, STOPPED, and CONTINUED later.
 		 */
-		if (WCOREDUMP(p->p_xstat))
+		if (WCOREDUMP(p->p_xstat)) {
 			siginfo->si_code = CLD_DUMPED;
-		else if (WIFSIGNALED(p->p_xstat))
+			siginfo->si_status = WTERMSIG(p->p_xstat);
+		} else if (WIFSIGNALED(p->p_xstat)) {
 			siginfo->si_code = CLD_KILLED;
-		else
+			siginfo->si_status = WTERMSIG(p->p_xstat);
+		} else {
 			siginfo->si_code = CLD_EXITED;
+			siginfo->si_status = WEXITSTATUS(p->p_xstat);
+		}
 
 		siginfo->si_pid = p->p_pid;
 		siginfo->si_uid = p->p_ucred->cr_uid;
-		siginfo->si_status = p->p_xstat;
 
 		/*
 		 * The si_addr field would be useful additional

@@ -3153,7 +3153,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 	struct rt2860_txwi *txwi;
 	int hasqos, isdata, ismcast, free;
 	uint16_t mcs, qid, dur;
-	uint8_t ctl_ridx, tid, pad;
+	uint8_t ctl_ridx, pad;
 
 	wh = mtod(m, struct ieee80211_frame *);
 
@@ -3173,13 +3173,10 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 		    *((struct ieee80211_qosframe_addr4 *)wh)->i_qos :
 		    *((struct ieee80211_qosframe *)wh)->i_qos;
 
-		tid = qos & IEEE80211_QOS_TID;
 		flags |= (qos & IEEE80211_QOS_ACKPOLICY) ==
 		    IEEE80211_QOS_ACKPOLICY_NOACK ? RUN_TX_NOACK : 0;
-	} else {
-		tid = IEEE80211_NONQOS_TID;
+	} else
 		flags |= ismcast ? RUN_TX_NOACK : 0;
-	}
 
 	qid = M_WME_GETAC(m);
 
@@ -3273,21 +3270,13 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 
 	txwi->phy = htole16(mcs);
 
-	if (m->m_flags & M_AMPDU_MPDU && tid < IEEE80211_NONQOS_TID) {
+	if (m->m_flags & M_AMPDU_MPDU) {
 		txwi->flags |=
 		    MS(ni->ni_htparam, IEEE80211_HTCAP_MPDUDENSITY) <<
 		    RT2860_TX_MPDU_DSITY_SHIFT | RT2860_TX_AMPDU;
 		/* 0x00 = 1 agg, 0x3f = 64 agg */
 		txwi->xflags = (ni->ni_tx_ampdu[qid].txa_wnd - 1) <<
 		    RT2860_TX_BAWINSIZE_SHIFT;
-		ni->ni_txseqs[tid] = IEEE80211_SEQ_INC(ni->ni_txseqs[tid]);
-		*(uint16_t *)wh->i_seq =
-		    htole16(ni->ni_txseqs[tid] << IEEE80211_SEQ_SEQ_SHIFT);
-
-		if ((ni->ni_txseqs[tid] & 0xf) != 0)
-			flags &= ~0xf000;
-
-		txwi->txop = RT2860_TX_TXOP_HT;
 	}
 
 	/*
@@ -3334,6 +3323,13 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 			break;
 		data = (void *)m->m_pkthdr.rcvif;
 		qid = M_WME_GETAC(m);
+		if (m->m_flags & M_AMPDU_MPDU) {
+			ni = data->ni;
+			wh = mtod(m, struct ieee80211_frame *);
+			ni->ni_txseqs[qid] = IEEE80211_SEQ_INC(ni->ni_txseqs[qid]);
+			*(uint16_t *)wh->i_seq =
+			    htole16(ni->ni_txseqs[qid] << IEEE80211_SEQ_SEQ_SHIFT);
+		}
 		STAILQ_INSERT_TAIL(&sc->sc_epq[qid].tx_qh, data, next);
 		usbd_transfer_start(sc->sc_xfer[qid]);
 	}

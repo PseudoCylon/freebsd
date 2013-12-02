@@ -371,7 +371,7 @@ static void	run_key_delete_cb(void *);
 static int	run_key_delete(struct ieee80211vap *, struct ieee80211_key *);
 static void	run_ratectl_to(void *);
 static void	run_ratectl_cb(void *, int);
-static void	run_drain_fifo(void *);
+static void	run_drain_fifo(struct run_softc *);
 static void	run_iter_func(void *, struct ieee80211_node *);
 static void	run_newassoc_cb(void *);
 static void	run_newassoc(struct ieee80211_node *, int);
@@ -422,7 +422,8 @@ static void	run_updateslot_cb(void *);
 static void	run_update_mcast(struct ifnet *);
 static int8_t	run_rssi2dbm(struct run_softc *, uint8_t, uint8_t);
 static void	run_set_tid_cb(void *);
-static int	run_send_action(struct ieee80211_node *, int, int, void *);
+static int	run_addba_request(struct ieee80211_node *,
+		    struct ieee80211_tx_ampdu *, int, int, int);
 static int	run_addba_response(struct ieee80211_node *,
 		    struct ieee80211_tx_ampdu *, int, int, int);
 static void	run_addba_stop(struct ieee80211_node *,
@@ -738,8 +739,8 @@ run_attach(device_t self)
 	ic->ic_vap_delete = run_vap_delete;
 
 	if (sc->rf_rev != RT3070_RF_2020) {
-		sc->sc_send_action = ic->ic_send_action;
-		ic->ic_send_action = run_send_action;
+		sc->sc_addba_request = ic->ic_addba_request;
+		ic->ic_addba_request = run_addba_request;
 		sc->sc_addba_response = ic->ic_addba_response;
 		ic->ic_addba_response = run_addba_response;
 		sc->sc_addba_stop = ic->ic_addba_stop;
@@ -785,7 +786,7 @@ run_detach(device_t self)
 
 	RUN_LOCK(sc);
 	sc->ratectl_run = RUN_RATECTL_OFF;
-	sc->cmdq_run = sc->cmdq_key_set = RUN_CMDQ_ABORT;
+	sc->cmdq_run = RUN_CMDQ_ABORT;
 
 	/* free TX list, if any */
 	for (i = 0; i != RUN_EP_QUEUES; i++)
@@ -886,8 +887,8 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	vap->iv_newstate = run_newstate;
 
 	if (sc->rf_rev != RT3070_RF_2020) {
-		vap->iv_ampdu_rxmax = IEEE80211_HTCAP_MAXRXAMPDU_8K;
-		vap->iv_ampdu_density = IEEE80211_HTCAP_MPDUDENSITY_16;
+		vap->iv_ampdu_rxmax = IEEE80211_HTCAP_MAXRXAMPDU_32K;
+		vap->iv_ampdu_density = IEEE80211_HTCAP_MPDUDENSITY_NA;
 	}
 
 	ieee80211_ratectl_init(vap);
@@ -907,10 +908,8 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	if (sc->rvp_cnt++ == 0)
 		ic->ic_opmode = opmode;
 
-	if (opmode == IEEE80211_M_HOSTAP)
-		sc->cmdq_run = RUN_CMDQ_GO;
+	sc->cmdq_run = RUN_CMDQ_GO;
 
-#if 0
 	/*
 	 * Poking register on every Tx is expensive.
 	 * So, collect stats 10 times/sec.
@@ -919,10 +918,9 @@ run_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	sc->hz = (vap->iv_opmode != IEEE80211_M_IBSS &&
 	    vap->iv_opmode != IEEE80211_M_STA) ?
 	    hz / 10 : hz;
-#endif
 
-	DPRINTF("rvp_id=%d bmap=%x rvp_cnt=%d\n",
-	    rvp->rvp_id, sc->rvp_bmap, sc->rvp_cnt);
+	DPRINTF("rvp_id=%d bmap=%x rvp_cnt=%d, hz=%d\n",
+	    rvp->rvp_id, sc->rvp_bmap, sc->rvp_cnt, sc->hz);
 
 	return (vap);
 }
@@ -982,18 +980,14 @@ run_cmdq_cb(void *arg, int pending)
 
 	/* call cmdq[].func locked */
 	RUN_LOCK(sc);
-	for (i = sc->cmdq_exec; sc->cmdq[i].func && pending;
-	    i = sc->cmdq_exec, pending--) {
+	for (i = sc->cmdq_exec; sc->cmdq[i].func != NULL ; i = sc->cmdq_exec) {
 		DPRINTFN(6, "cmdq_exec=%d pending=%d\n", i, pending);
 		if (sc->cmdq_run == RUN_CMDQ_GO) {
 			/*
-			 * If arg0 is NULL, callback func needs more
-			 * than one arg. So, pass ptr to cmdq struct.
+			 * .arg0 is either ptr to a variable or ptr to cmdq{}.
+			 * Each callback function will use it accordingly.
 			 */
-			if (sc->cmdq[i].arg0)
-				sc->cmdq[i].func(sc->cmdq[i].arg0);
-			else
-				sc->cmdq[i].func(&sc->cmdq[i]);
+			sc->cmdq[i].func(sc->cmdq[i].arg0);
 		}
 		sc->cmdq[i].arg0 = NULL;
 		sc->cmdq[i].func = NULL;
@@ -1881,6 +1875,7 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 {
 	const struct ieee80211_txparam *tp;
 	struct ieee80211com *ic = vap->iv_ic;
+	struct ieee80211_node *ni = NULL;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
 	struct run_vap *rvp = RUN_VAP(vap);
 	enum ieee80211_state ostate;
@@ -1902,9 +1897,22 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	sc->ratectl_run = RUN_RATECTL_OFF;
 	usb_callout_stop(&sc->ratectl_ch);
 
-	if (ostate == IEEE80211_S_RUN) {
+	switch (ostate) {
+	case IEEE80211_S_RUN:
 		/* turn link LED off */
 		run_set_leds(sc, RT2860_LED_RADIO);
+
+		break;
+	case IEEE80211_S_INIT:
+		/* reset max ampdu value */
+		sc->rxampdu = IEEE80211_HTCAP_MAXRXAMPDU_64K;
+		run_read(sc, RT2860_MAX_LEN_CFG, &tmp);
+		tmp |= (RT2860_MAX_PSDU_LEN64K << RT2860_MAX_PSDU_LEN_SHIFT);
+		run_write(sc, RT2860_MAX_LEN_CFG, tmp);
+
+		break;
+	default:
+		break;
 	}
 
 	switch (nstate) {
@@ -1924,6 +1932,7 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			    tmp & ~(RT2860_BCN_TX_EN | RT2860_TSF_TIMER_EN |
 			    RT2860_TBTT_TIMER_EN));
 		}
+
 		break;
 
 	case IEEE80211_S_RUN:
@@ -1965,8 +1974,6 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		}
 
 		if (vap->iv_opmode != IEEE80211_M_MONITOR) {
-			struct ieee80211_node *ni;
-
 			if (ic->ic_bsschan == IEEE80211_CHAN_ANYC) {
 				RUN_UNLOCK(sc);
 				IEEE80211_LOCK(ic);
@@ -1976,10 +1983,13 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			run_enable_mrr(sc);
 			run_set_txpreamble(sc);
 			run_set_basicrates(sc);
+			/*
+			 * call ieee80211_free_node() after RUN_UNLOCK()
+			 * to prevent LOR
+			 */
 			ni = ieee80211_ref_node(vap->iv_bss);
 			IEEE80211_ADDR_COPY(sc->sc_bssid, ni->ni_bssid);
 			run_set_bssid(sc, ni->ni_bssid);
-			ieee80211_free_node(ni);
 			run_enable_tsf_sync(sc);
 
 			/* enable automatic rate adaptation */
@@ -2001,12 +2011,16 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 	/* restart amrr for running VAPs */
 	if ((sc->ratectl_run = ratectl) && restart_ratectl)
-		usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);
+		usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
 
 	RUN_UNLOCK(sc);
+
+	if (ni != NULL)
+		ieee80211_free_node(ni);
+
 	IEEE80211_LOCK(ic);
 
-	return(rvp->newstate(vap, nstate, arg));
+	return (rvp->newstate(vap, nstate, arg));
 }
 
 /* ARGSUSED */
@@ -2118,26 +2132,16 @@ run_key_set_cb(void *arg)
 	struct ieee80211_key *k = cmdq->k;
 	struct ieee80211com *ic = vap->iv_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	struct ieee80211_node *ni;
 	uint32_t attr;
-	uint16_t base, associd;
+	uint16_t base;
 	uint8_t mode, wcid, iv[8];
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
 
-	if (vap->iv_opmode == IEEE80211_M_HOSTAP)
-		ni = ieee80211_find_vap_node(&ic->ic_sta, vap, cmdq->cmdq_mac);
-	else
-		ni = vap->iv_bss;
-	associd = (ni != NULL) ? ni->ni_associd : 0;
-
 	/* map net80211 cipher to RT2860 security mode */
 	switch (k->wk_cipher->ic_cipher) {
 	case IEEE80211_CIPHER_WEP:
-		if(k->wk_keylen < 8)
-			mode = RT2860_MODE_WEP40;
-		else
-			mode = RT2860_MODE_WEP104;
+		mode = k->wk_keylen < 8 ? RT2860_MODE_WEP40 : RT2860_MODE_WEP104;
 		break;
 	case IEEE80211_CIPHER_TKIP:
 		mode = RT2860_MODE_TKIP;
@@ -2150,27 +2154,19 @@ run_key_set_cb(void *arg)
 		return;
 	}
 
-	DPRINTFN(1, "associd=%x, keyix=%d, mode=%x, type=%s, tx=%s, rx=%s\n",
-	    associd, k->wk_keyix, mode,
+	wcid = k->wk_pad;
+	base = k->wk_flags & IEEE80211_KEY_GROUP ?
+	    RT2860_SKEY(RUN_VAP(vap)->rvp_id, k->wk_keyix) : RT2860_PKEY(wcid);
+
+	DPRINTFN(1, "wcid=%x, keyix=%d, mode=%x, type=%s, tx=%s, rx=%s\n",
+	    wcid, k->wk_keyix, mode,
 	    (k->wk_flags & IEEE80211_KEY_GROUP) ? "group" : "pairwise",
 	    (k->wk_flags & IEEE80211_KEY_XMIT) ? "on" : "off",
 	    (k->wk_flags & IEEE80211_KEY_RECV) ? "on" : "off");
 
-	if (k->wk_flags & IEEE80211_KEY_GROUP) {
-		wcid = 0;	/* NB: update WCID0 for group keys */
-		base = RT2860_SKEY(RUN_VAP(vap)->rvp_id, k->wk_keyix);
-	} else {
-		wcid = (vap->iv_opmode == IEEE80211_M_STA) ?
-		    1 : RUN_AID2WCID(associd);
-		base = RT2860_PKEY(wcid);
-	}
 
 	if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_TKIP) {
-		if (run_write_region_1(sc, base, k->wk_key, 16))
-			return;
-		if (run_write_region_1(sc, base + 16, &k->wk_key[16], 8))	/* wk_txmic */
-			return;
-		if (run_write_region_1(sc, base + 24, &k->wk_key[24], 8))	/* wk_rxmic */
+		if (run_write_region_1(sc, base, k->wk_key, 32))
 			return;
 	} else {
 		/* roundup len to 16-bit: XXX fix write_region_1() instead */
@@ -2178,8 +2174,7 @@ run_key_set_cb(void *arg)
 			return;
 	}
 
-	if (!(k->wk_flags & IEEE80211_KEY_GROUP) ||
-	    (k->wk_flags & (IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV))) {
+	if (!(k->wk_flags & IEEE80211_KEY_GROUP)) {
 		/* set initial packet number in IV+EIV */
 		if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_WEP) {
 			memset(iv, 0, sizeof iv);
@@ -2222,9 +2217,6 @@ run_key_set_cb(void *arg)
 	}
 
 	/* TODO create a pass-thru key entry? */
-
-	/* need wcid to delete the right key later */
-	k->wk_pad = wcid;
 }
 
 /*
@@ -2239,26 +2231,48 @@ run_key_set(struct ieee80211vap *vap, struct ieee80211_key *k,
 		const uint8_t mac[IEEE80211_ADDR_LEN])
 {
 	struct ieee80211com *ic = vap->iv_ic;
+	struct ieee80211_node *ni;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
 	uint32_t i;
 
-	i = RUN_CMDQ_GET(&sc->cmdq_store);
-	DPRINTF("cmdq_store=%d\n", i);
-	sc->cmdq[i].func = run_key_set_cb;
-	sc->cmdq[i].arg0 = NULL;
-	sc->cmdq[i].arg1 = vap;
-	sc->cmdq[i].k = k;
-	IEEE80211_ADDR_COPY(sc->cmdq[i].cmdq_mac, mac);
-	ieee80211_runtask(ic, &sc->cmdq_task);
+	if (vap->iv_opmode == IEEE80211_M_HOSTAP)
+		ni = ieee80211_find_vap_node(&ic->ic_sta, vap, mac);
+	else
+		ni = vap->iv_bss;
 
-	/*
-	 * To make sure key will be set when hostapd
-	 * calls iv_key_set() before if_init().
-	 */
-	if (vap->iv_opmode == IEEE80211_M_HOSTAP) {
-		RUN_LOCK(sc);
-		sc->cmdq_key_set = RUN_CMDQ_GO;
+	/* need wcid to delete the right key later */
+	if (k->wk_flags & IEEE80211_KEY_GROUP || ni == NULL)
+		k->wk_pad = 0;	/* NB: update WCID0 for group keys */
+	else {
+		k->wk_pad = vap->iv_opmode == IEEE80211_M_STA ?
+		    1 : RUN_AID2WCID(ni->ni_associd);
+	}
+
+	DPRINTF("associd=%x wcid=%d\n",
+	    ni != NULL ? ni->ni_associd : 0xffff, k->wk_pad);
+
+	RUN_LOCK(sc);
+	if (isclr(sc->cmdq_key_del, k->wk_pad)) {
+		struct run_cmdq cmdq;
+
+		cmdq.arg1 = vap;
+		cmdq.k = k;
+		IEEE80211_ADDR_COPY(cmdq.cmdq_mac, mac);
+
+		run_key_set_cb(&cmdq);
+
 		RUN_UNLOCK(sc);
+	} else {
+		RUN_UNLOCK(sc);
+
+		i = RUN_CMDQ_GET(&sc->cmdq_store);
+		DPRINTF("cmdq_store=%d\n", i);
+		sc->cmdq[i].func = run_key_set_cb;
+		sc->cmdq[i].arg0 = &sc->cmdq[i];
+		sc->cmdq[i].arg1 = vap;
+		sc->cmdq[i].k = k;
+		IEEE80211_ADDR_COPY(sc->cmdq[i].cmdq_mac, mac);
+		ieee80211_runtask(ic, &sc->cmdq_task);
 	}
 
 	return (1);
@@ -2274,30 +2288,27 @@ run_key_delete_cb(void *arg)
 {
 	struct run_cmdq *cmdq = arg;
 	struct run_softc *sc = cmdq->arg1;
-	struct ieee80211_key *k = &cmdq->key;
 	uint32_t attr;
-	uint8_t wcid;
+	uint8_t wcid = cmdq->cmdq_wk_pad;
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
 
-	if (k->wk_flags & IEEE80211_KEY_GROUP) {
+	if (cmdq->cmdq_wk_flags & IEEE80211_KEY_GROUP) {
 		/* remove group key */
 		DPRINTF("removing group key\n");
 		run_read(sc, RT2860_SKEY_MODE_0_7, &attr);
-		attr &= ~(0xf << (k->wk_keyix * 4));
+		attr &= ~(0xf << (cmdq->cmdq_wk_keyix * 4));
 		run_write(sc, RT2860_SKEY_MODE_0_7, attr);
 	} else {
 		/* remove pairwise key */
-		DPRINTF("removing key for wcid %x\n", k->wk_pad);
-		/* matching wcid was written to wk_pad in run_key_set() */
-		wcid = k->wk_pad;
+		DPRINTF("removing key for wcid %x\n", wcid);
 		run_read(sc, RT2860_WCID_ATTR(wcid), &attr);
 		attr &= ~0xf;
 		run_write(sc, RT2860_WCID_ATTR(wcid), attr);
-		run_set_region_4(sc, RT2860_WCID_ENTRY(wcid), 0, 8);
 	}
 
-	k->wk_pad = 0;
+	/* key deletion done */
+	clrbit(sc->cmdq_key_del, wcid);
 }
 
 /*
@@ -2308,8 +2319,13 @@ run_key_delete(struct ieee80211vap *vap, struct ieee80211_key *k)
 {
 	struct ieee80211com *ic = vap->iv_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	struct ieee80211_key *k0;
 	uint32_t i;
+	uint8_t wcid = k->wk_pad;
+
+	/* key_delete is in progress */
+	RUN_LOCK(sc);
+	setbit(sc->cmdq_key_del, wcid);
+	RUN_UNLOCK(sc);
 
 	/*
 	 * When called back, key might be gone. So, make a copy
@@ -2320,16 +2336,15 @@ run_key_delete(struct ieee80211vap *vap, struct ieee80211_key *k)
 	i = RUN_CMDQ_GET(&sc->cmdq_store);
 	DPRINTF("cmdq_store=%d\n", i);
 	sc->cmdq[i].func = run_key_delete_cb;
-	sc->cmdq[i].arg0 = NULL;
+	sc->cmdq[i].arg0 = &sc->cmdq[i];
 	sc->cmdq[i].arg1 = sc;
-	k0 = &sc->cmdq[i].key;
-	k0->wk_flags = k->wk_flags;
-	k0->wk_keyix = k->wk_keyix;
+	sc->cmdq[i].cmdq_wk_flags = k->wk_flags;
+	sc->cmdq[i].cmdq_wk_keyix = k->wk_keyix;
 	/* matching wcid was written to wk_pad in run_key_set() */
-	k0->wk_pad = k->wk_pad;
+	sc->cmdq[i].cmdq_wk_pad = k->wk_pad;
 	ieee80211_runtask(ic, &sc->cmdq_task);
-	return (1);	/* return fake success */
 
+	return (1);	/* return fake success */
 }
 
 static void
@@ -2349,45 +2364,57 @@ run_ratectl_cb(void *arg, int pending)
 	struct run_softc *sc = arg;
 	struct ieee80211com *ic = sc->sc_ifp->if_l2com;
 	struct ieee80211vap *vap = TAILQ_FIRST(&ic->ic_vaps);
-	uint16_t tmp[6];
+	static uint8_t cnt;
 
 	if (vap == NULL)
 		return;
 
-	if (sc->rvp_cnt <= 1 && vap->iv_opmode == IEEE80211_M_STA)
+	if (sc->rvp_cnt <= 1 &&
+	    (vap->iv_opmode == IEEE80211_M_STA || vap->iv_opmode == IEEE80211_M_STA))
 		run_iter_func(sc, vap->iv_bss);
 	else {
-		/*
-		 * run_reset_livelock() doesn't do anything with AMRR,
-		 * but Ralink wants us to call it every 1 sec. So, we
-		 * piggyback here rather than creating another callout.
-		 * Livelock may occur only in HOSTAP or IBSS mode
-		 * (when h/w is sending beacons).
-		 */
 		RUN_LOCK(sc);
-		run_reset_livelock(sc);
-		/* just in case, there are some stats to drain */
 		run_drain_fifo(sc);
-		RUN_UNLOCK(sc);
-		ieee80211_iterate_nodes(&ic->ic_sta, run_iter_func, sc);
+		if(++cnt < 10)
+			RUN_UNLOCK(sc);
+		else {
+			cnt = 0;
+			/*
+			 * run_reset_livelock() doesn't do anything with AMRR,
+			 * but Ralink wants us to call it every 1 sec. So, we
+			 * piggyback here rather than creating another callout.
+			 * Livelock may occur only in HOSTAP or IBSS mode
+			 * (when h/w is sending beacons).
+			 */
+			run_reset_livelock(sc);
+			RUN_UNLOCK(sc);
+			ieee80211_iterate_nodes(&ic->ic_sta, run_iter_func, sc);
+		}
 	}
 
 	RUN_LOCK(sc);
-	run_read_region_1(sc, RT2860_RX_STA_CNT0, (uint8_t *)tmp,
-	    sizeof(uint32_t) * 3);
-	DPRINTFN(2, "Rx Err crc=%u phy=%u cca=%u plpc=%u dup=%u ovfl=%u\n",
-	    le16toh(tmp[0]), le16toh(tmp[1]), le16toh(tmp[2]),
-	    le16toh(tmp[3]), le16toh(tmp[4]), le16toh(tmp[5]));
+
+#ifdef	RUN_DEBUG
+	if (cnt == 0) {
+		uint16_t tmp[6];
+
+		run_read_region_1(sc, RT2860_RX_STA_CNT0, (uint8_t *)tmp,
+		    sizeof(tmp));
+
+		DPRINTFN(2, "Rx Err crc=%u phy=%u cca=%u plpc=%u dup=%u ovfl=%u\n",
+		    le16toh(tmp[0]), le16toh(tmp[1]), le16toh(tmp[2]),
+		    le16toh(tmp[3]), le16toh(tmp[4]), le16toh(tmp[5]));
+	}
+#endif	/* RUN_DEBUG */
 
 	if(sc->ratectl_run != RUN_RATECTL_OFF)
-		usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);
+		usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
 	RUN_UNLOCK(sc);
 }
 
 static void
-run_drain_fifo(void *arg)
+run_drain_fifo(struct run_softc *sc)
 {
-	struct run_softc *sc = arg;
 	struct ifnet *ifp = sc->sc_ifp;
 	uint32_t stat;
 	uint16_t (*wstat)[3];
@@ -2433,7 +2460,9 @@ run_drain_fifo(void *arg)
 		 */
 		mcs = (stat >> RT2860_TXQ_MCS_SHIFT) & 0x7f;
 		pid = (stat >> RT2860_TXQ_PID_SHIFT) & 0xf;
-		if ((retry = pid -1 - mcs) > 0) {
+		if (isset(sc->wcid2ht, wcid))
+			mcs = rt2860_rates[mcs + 12].pid;
+		if ((retry = pid - 1 - mcs) > 0) {
 			(*wstat)[RUN_TXCNT] += retry;
 			(*wstat)[RUN_RETRY] += retry;
 		}
@@ -2509,6 +2538,8 @@ run_newassoc_cb(void *arg)
 	struct run_cmdq *cmdq = arg;
 	struct ieee80211_node *ni = cmdq->arg1;
 	struct run_softc *sc = ni->ni_vap->iv_ic->ic_ifp->if_softc;
+	uint32_t tmp;
+	uint8_t rxampdu;
 	uint8_t wcid = cmdq->cmdq_wcid;
 
 	RUN_LOCK_ASSERT(sc, MA_OWNED);
@@ -2517,13 +2548,27 @@ run_newassoc_cb(void *arg)
 	    ni->ni_macaddr, IEEE80211_ADDR_LEN);
 
 	memset(&(sc->wcid_stats[wcid]), 0, sizeof(sc->wcid_stats[wcid]));
+	if (ni->ni_flags & IEEE80211_NODE_HT)
+		setbit(sc->wcid2ht, wcid);
+	else
+		clrbit(sc->wcid2ht, wcid);
+
+	rxampdu = MS(ni->ni_htparam, IEEE80211_HTCAP_MAXRXAMPDU);
+	DPRINTF("sc_rxampdu=%u ni_rxampdu=%u\n", sc->rxampdu, rxampdu);
+	if (sc->rxampdu > rxampdu) {
+		sc->rxampdu = rxampdu;
+		run_read(sc, RT2860_MAX_LEN_CFG, &tmp);
+		tmp &= ~(3 << RT2860_MAX_PSDU_LEN_SHIFT);
+		tmp |= (rxampdu << RT2860_MAX_PSDU_LEN_SHIFT);
+		run_write(sc, RT2860_MAX_LEN_CFG, tmp);
+	}
 }
 
 static void
 run_newassoc(struct ieee80211_node *ni, int isnew)
 {
 	struct run_node *rn = (void *)ni;
-	struct ieee80211_rateset *rs = &ni->ni_rates;
+	struct ieee80211_rateset *rs;
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct ieee80211com *ic = vap->iv_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
@@ -2548,7 +2593,7 @@ run_newassoc(struct ieee80211_node *ni, int isnew)
 		uint32_t cnt = RUN_CMDQ_GET(&sc->cmdq_store);
 		DPRINTF("cmdq_store=%d\n", cnt);
 		sc->cmdq[cnt].func = run_newassoc_cb;
-		sc->cmdq[cnt].arg0 = NULL;
+		sc->cmdq[cnt].arg0 = &sc->cmdq[cnt];
 		sc->cmdq[cnt].arg1 = ni;
 		sc->cmdq[cnt].cmdq_wcid = wcid;
 		ieee80211_runtask(ic, &sc->cmdq_task);
@@ -2907,9 +2952,6 @@ run_tx_free(struct run_endpoint_queue *pq,
 			data->ni = NULL;
 		}
 	}
-
-	STAILQ_INSERT_TAIL(&pq->tx_fh, data, next);
-	pq->tx_nfree++;
 }
 
 static void
@@ -2918,15 +2960,15 @@ run_bulk_tx_callbackN(struct usb_xfer *xfer, usb_error_t error, u_int index)
 	struct run_softc *sc = usbd_xfer_softc(xfer);
 	struct ifnet *ifp = sc->sc_ifp;
 	struct ieee80211com *ic = ifp->if_l2com;
-	struct run_tx_data *data;
+	struct run_tx_data *data, *tx_free[3];
 	struct ieee80211vap *vap = NULL;
 	struct usb_page_cache *pc;
 	struct run_endpoint_queue *pq = &sc->sc_epq[index];
 	struct mbuf *m;
 	usb_frlength_t size;
-	int actlen;
-	int sumlen;
+	int actlen, sumlen, i;
 
+	memset(tx_free, 0, sizeof(tx_free));
 	usbd_xfer_status(xfer, &actlen, &sumlen, NULL, NULL);
 
 	switch (USB_GET_STATE(xfer)) {
@@ -2934,10 +2976,7 @@ run_bulk_tx_callbackN(struct usb_xfer *xfer, usb_error_t error, u_int index)
 		DPRINTFN(11, "transfer complete: %d "
 		    "bytes @ index %d\n", actlen, index);
 
-		data = usbd_xfer_get_priv(xfer);
-
-		run_tx_free(pq, data, 0);
-		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
+		data = tx_free[0] = usbd_xfer_get_priv(xfer);
 
 		usbd_xfer_set_priv(xfer, NULL);
 
@@ -2960,7 +2999,8 @@ tr_setup:
 
 			ifp->if_oerrors++;
 
-			run_tx_free(pq, data, 1);
+			KASSERT(tx_free[1] == NULL, ("multiple failure"));
+			tx_free[1] = data;
 
 			goto tr_setup;
 		}
@@ -3016,8 +3056,9 @@ tr_setup:
 		if (data != NULL) {
 			if(data->ni != NULL)
 				vap = data->ni->ni_vap;
-			run_tx_free(pq, data, error);
-			usbd_xfer_set_priv(xfer, NULL);
+
+			KASSERT(tx_free[2] == NULL, ("multiple failure"));
+			tx_free[2] = data;
 		}
 		if (vap == NULL)
 			vap = TAILQ_FIRST(&ic->ic_vaps);
@@ -3041,6 +3082,26 @@ tr_setup:
 			goto tr_setup;
 		}
 		break;
+	}
+
+	RUN_UNLOCK(sc);
+	for (i = 0; i < 3; i++) {
+		if (tx_free[i] == NULL)
+			continue;
+		/*
+		 * Call ieee80211_process_callback() and ieee80211_free_node()
+		 * without holding driver lock to prevent LOR.
+		 */
+		run_tx_free(pq, tx_free[i], i);
+	}
+	RUN_LOCK(sc);
+
+	for (i = 0; i < 3; i++) {
+		if (tx_free[i] == NULL)
+			continue;
+		STAILQ_INSERT_TAIL(&pq->tx_fh, tx_free[i], next);
+		pq->tx_nfree++;
+		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 	}
 }
 
@@ -3092,7 +3153,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 	struct rt2860_txwi *txwi;
 	int hasqos, isdata, ismcast, free;
 	uint16_t mcs, qid, dur;
-	uint8_t ctl_ridx, tid, pad;
+	uint8_t ctl_ridx, pad;
 
 	wh = mtod(m, struct ieee80211_frame *);
 
@@ -3112,13 +3173,10 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 		    *((struct ieee80211_qosframe_addr4 *)wh)->i_qos :
 		    *((struct ieee80211_qosframe *)wh)->i_qos;
 
-		tid = qos & IEEE80211_QOS_TID;
 		flags |= (qos & IEEE80211_QOS_ACKPOLICY) ==
 		    IEEE80211_QOS_ACKPOLICY_NOACK ? RUN_TX_NOACK : 0;
-	} else {
-		tid = IEEE80211_NONQOS_TID;
+	} else
 		flags |= ismcast ? RUN_TX_NOACK : 0;
-	}
 
 	qid = M_WME_GETAC(m);
 
@@ -3212,20 +3270,13 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 
 	txwi->phy = htole16(mcs);
 
-	if (m->m_flags & M_AMPDU_MPDU && tid < IEEE80211_NONQOS_TID) {
+	if (m->m_flags & M_AMPDU_MPDU) {
 		txwi->flags |=
 		    MS(ni->ni_htparam, IEEE80211_HTCAP_MPDUDENSITY) <<
 		    RT2860_TX_MPDU_DSITY_SHIFT | RT2860_TX_AMPDU;
-		txwi->xflags = (ni->ni_tx_ampdu[qid].txa_wnd) <<
+		/* 0x00 = 1 agg, 0x3f = 64 agg */
+		txwi->xflags = (ni->ni_tx_ampdu[qid].txa_wnd - 1) <<
 		    RT2860_TX_BAWINSIZE_SHIFT;
-		ni->ni_txseqs[tid] = IEEE80211_SEQ_INC(ni->ni_txseqs[tid]);
-		*(uint16_t *)wh->i_seq =
-		    htole16(ni->ni_txseqs[tid] << IEEE80211_SEQ_SEQ_SHIFT);
-
-		if ((ni->ni_txseqs[tid] & 0xf) != 0)
-			flags &= ~0xf000;
-
-		txwi->txop = RT2860_TX_TXOP_HT;
 	}
 
 	/*
@@ -3246,7 +3297,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 			    rt2860_rates[ctl_ridx].ht40_dur :
 			    rt2860_rates[ctl_ridx].ht20_dur;
 			dur = mcs & RT2860_PHY_SGI ? dur * 4 : (dur * 18 + 4) / 5;
-			dur += (32 + 4 * ridx < 20 ? 1 : ridx < 28 ? 2 : 3);
+			dur += (32 + 4 * (ridx < 20 ? 1 : ridx < 28 ? 2 : 3));
 		} else {
 			dur = ic->ic_flags & IEEE80211_F_SHPREAMBLE ?
 			    rt2860_rates[ctl_ridx].sp_ack_dur :
@@ -3272,6 +3323,13 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 			break;
 		data = (void *)m->m_pkthdr.rcvif;
 		qid = M_WME_GETAC(m);
+		if (m->m_flags & M_AMPDU_MPDU) {
+			ni = data->ni;
+			wh = mtod(m, struct ieee80211_frame *);
+			ni->ni_txseqs[qid] = IEEE80211_SEQ_INC(ni->ni_txseqs[qid]);
+			*(uint16_t *)wh->i_seq =
+			    htole16(ni->ni_txseqs[qid] << IEEE80211_SEQ_SEQ_SHIFT);
+		}
 		STAILQ_INSERT_TAIL(&sc->sc_epq[qid].tx_qh, data, next);
 		usbd_transfer_start(sc->sc_xfer[qid]);
 	}
@@ -3313,32 +3371,8 @@ run_tx(struct run_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 		 */
 		if (vap->iv_opmode == IEEE80211_M_HOSTAP ||
 		    vap->iv_opmode == IEEE80211_M_MBSS || sc->rvp_cnt > 1) {
-			flags |= ((rt2860_rates[ridx].mcs + 1) & 0xf) <<
+			flags |= (rt2860_rates[ridx].pid + 1) <<
 			 RT2860_TX_PID_SHIFT;
-
-			/*
-			 * Unlike PCI based devices, we don't get any interrupt from
-			 * USB devices, so we simulate FIFO-is-full interrupt here.
-			 * Ralink recomends to drain FIFO stats every 100 ms, but 16 slots
-			 * quickly get fulled. To prevent overflow, increment a counter on
-			 * every FIFO stat request, so we know how many slots are left.
-			 * We do this only in HOSTAP or multiple vap mode since FIFO stats
-			 * are used only in those modes.
-			 * We just drain stats. AMRR gets updated every 1 sec by
-			 * run_ratectl_cb() via callout.
-			 * Call it early. Otherwise overflow.
-			 */
-			if (sc->fifo_cnt++ == 10) {
-				/*
-				 * With multiple vaps or if_bridge, if_start() is called
-				 * with a non-sleepable lock, tcpinp. So, need to defer.
-				 */
-				uint32_t i = RUN_CMDQ_GET(&sc->cmdq_store);
-				DPRINTFN(6, "cmdq_store=%d\n", i);
-				sc->cmdq[i].func = run_drain_fifo;
-				sc->cmdq[i].arg0 = sc;
-				ieee80211_runtask(ni->ni_ic, &sc->cmdq_task);
-			}
 		}
 	}
 
@@ -4260,6 +4294,7 @@ run_update_beacon_cb(void *arg)
 	struct run_softc *sc = ic->ic_ifp->if_softc;
 	struct rt2860_txwi txwi;
 	struct mbuf *m;
+	uint32_t tmp;
 	uint8_t ridx;
 
 	if (vap->iv_bss->ni_chan == IEEE80211_CHAN_ANYC)
@@ -4288,14 +4323,19 @@ run_update_beacon_cb(void *arg)
 	txwi.phy = htole16(rt2860_rates[ridx].mcs);
 	if (rt2860_rates[ridx].phy == IEEE80211_T_OFDM)
 	        txwi.phy |= htole16(RT2860_PHY_OFDM);
-	txwi.txop = RT2860_TX_TXOP_HT;
+	txwi.txop = RT2860_TX_TXOP_BACKOFF;
 	txwi.flags = RT2860_TX_TS;
 	txwi.xflags = RT2860_TX_NSEQ;
 
+	/* stop beacon Tx while updating, beacon may corrupt */
+	run_read(sc, RT2860_BCN_TIME_CFG, &tmp);
+	run_write(sc, RT2860_BCN_TIME_CFG, tmp & ~RT2860_BCN_TX_EN);
+	run_set_region_4(sc, RT2860_BCN_BASE(rvp->rvp_id), 0, 512);
 	run_write_region_1(sc, RT2860_BCN_BASE(rvp->rvp_id),
 	    (uint8_t *)&txwi, sizeof txwi);
 	run_write_region_1(sc, RT2860_BCN_BASE(rvp->rvp_id) + sizeof txwi,
 	    mtod(m, uint8_t *), (m->m_pkthdr.len + 1) & ~1);	/* roundup len */
+	run_write(sc, RT2860_BCN_TIME_CFG, tmp);
 
 	return;
 }
@@ -4358,7 +4398,8 @@ run_updateprot_cb(void *arg)
 
 	htprot = ic->ic_curhtprotmode & IEEE80211_HTINFO_OPMODE;
 	/* NB: IEEE80211_HTINFO_NONGF_PRESENT not yet used */
-	sc->nongf = ic->ic_curhtprotmode & IEEE80211_HTINFO_NONGF_PRESENT;
+	sc->nongf = ic->ic_curhtprotmode &
+	    (IEEE80211_HTINFO_NONGF_PRESENT | IEEE80211_HTINFO_NONHT_PRESENT);
 	if (htprot == IEEE80211_HTINFO_OPMODE_PROTOPT) {
 		htprot =
 		    ic->ic_curhtprotmode & IEEE80211_HTINFO_NONHT_PRESENT ?
@@ -4485,29 +4526,20 @@ run_set_tid_cb(void *arg)
 }
 
 static int
-run_send_action(struct ieee80211_node *ni, int category, int action, void *arg)
+run_addba_request(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap,
+    int dialogtoken, int baparamset, int batimeout)
 {
 	struct run_softc *sc = ni->ni_ic->ic_ifp->if_softc;
-	uint32_t mac = sc->mac_ver << 16 | sc->mac_rev;
-	int buf;
-	uint16_t *args = arg;
+	//uint32_t mac = sc->mac_ver << 16 | sc->mac_rev;
+	int ret;
 
-	DPRINTF("\n");
+	ret = sc->sc_addba_request(ni, tap, dialogtoken, baparamset, batimeout);
 
-	if (action == IEEE80211_ACTION_BA_ADDBA_RESPONSE ||
-	    action == IEEE80211_ACTION_BA_ADDBA_REQUEST) {
-		if (mac >= 0x28830300 && mac < 0x30700200)
-			buf = 32;
-		else if (mac >= 0x2870200)
-			buf = 8;	/* without encryption buf = 14 */
-		else
-			buf = 8;
+	//tap->txa_wnd = min(tap->txa_wnd, mac == 0x28720200 ? 13 : 7);
 
-		args[2] &= ~IEEE80211_BAPS_BUFSIZ;
-		args[2] |= SM(buf, IEEE80211_BAPS_BUFSIZ);
-	}
+	DPRINTF("txa_wnd=%u\n", tap->txa_wnd);
 
-	return (sc->sc_send_action(ni, category, action, arg));
+	return (ret);
 }
 
 static int
@@ -4516,17 +4548,16 @@ run_addba_response(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap,
 {
 	struct ieee80211com *ic = ni->ni_ic;
 	struct run_softc *sc = ic->ic_ifp->if_softc;
-	int buf, ret;
+	//uint32_t mac = sc->mac_ver << 16 | sc->mac_rev;
+	int ret;
 
 	DPRINTF("\n");
-
-	buf = MIN(MS(baparamset, IEEE80211_BAPS_BUFSIZ), tap->txa_wnd);
-	baparamset &= ~IEEE80211_BAPS_BUFSIZ;
-	baparamset |= SM(buf, IEEE80211_BAPS_BUFSIZ);
 
 	ret = sc->sc_addba_response(ni, tap, status, baparamset, batimeout);
 
 	if (status == IEEE80211_STATUS_SUCCESS) {
+		//tap->txa_wnd = min(tap->txa_wnd, mac == 0x28720200 ? 13 : 7);
+		DPRINTF("txa_wnd=%u\n", tap->txa_wnd);
 		ieee80211_send_bar(ni, tap,
 		    ni->ni_txseqs[MS(baparamset, IEEE80211_BAPS_TID)]);
 	} else {
@@ -4599,7 +4630,9 @@ run_bar_response(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap,
 	cmdq.cmdq_flags = status ? RUN_TID_DEL : RUN_TID_ADD;
 	cmdq.cmdq_wcid = wcid;
 
+	RUN_LOCK(sc);
 	run_set_tid_cb(&cmdq);
+	RUN_UNLOCK(sc);
 
 	sc->sc_bar_response(ni, tap, status);
 }
@@ -5435,9 +5468,6 @@ run_init_locked(struct run_softc *sc)
 
 	for (i = 0; i < nitems(rt2870_def_mac); i++)
 		run_write(sc, rt2870_def_mac[i].reg, rt2870_def_mac[i].val);
-	run_write(sc, RT2860_WMM_AIFSN_CFG, 0x00002273);
-	run_write(sc, RT2860_WMM_CWMIN_CFG, 0x00002344);
-	run_write(sc, RT2860_WMM_CWMAX_CFG, 0x000034aa);
 
 	if (sc->mac_ver == 0x5392) {
 		run_write(sc, RT2860_TX_SW_CFG0, 0x00000404);
@@ -5483,14 +5513,7 @@ run_init_locked(struct run_softc *sc)
 	run_set_region_4(sc, RT2860_WCID_ENTRY(0), 0, 512);
 	/* clear WCID attribute table */
 	run_set_region_4(sc, RT2860_WCID_ATTR(0), 0, 8 * 32);
-
-	/* hostapd sets a key before init. So, don't clear it. */
-	if (sc->cmdq_key_set != RUN_CMDQ_GO) {
-		/* clear shared key table */
-		run_set_region_4(sc, RT2860_SKEY(0, 0), 0, 8 * 32);
-		/* clear shared key mode */
-		run_set_region_4(sc, RT2860_SKEY_MODE_0_7, 0, 4);
-	}
+	memset(sc->cmdq_key_del, 0, sizeof(sc->cmdq_key_del));
 
 	run_read(sc, RT2860_US_CYC_CNT, &tmp);
 	tmp = (tmp & ~0xff) | 0x1e;
@@ -5546,9 +5569,6 @@ run_init_locked(struct run_softc *sc)
 	/* select default channel */
 	run_set_chan(sc, ic->ic_curchan);
 
-	/* setup initial protection mode */
-	run_updateprot_cb(ic);
-
 	/* turn radio LED on */
 	run_set_leds(sc, RT2860_LED_RADIO);
 
@@ -5602,11 +5622,11 @@ run_stop(void *arg)
 	ifp->if_drv_flags &= ~(IFF_DRV_RUNNING | IFF_DRV_OACTIVE);
 
 	sc->ratectl_run = RUN_RATECTL_OFF;
-	sc->cmdq_run = sc->cmdq_key_set;
+	sc->cmdq_run = RUN_CMDQ_ABORT;
 
 	RUN_UNLOCK(sc);
 
-	for(i = 0; i < RUN_N_XFER; i++)
+	for (i = 0; i < RUN_N_XFER; i++)
 		usbd_transfer_drain(sc->sc_xfer[i]);
 
 	RUN_LOCK(sc);

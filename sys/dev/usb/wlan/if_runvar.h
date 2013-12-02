@@ -41,7 +41,7 @@
 #define RUN_TX_TIMEOUT	5000	/* ms */
 
 /* Tx ring count was 8/endpoint, now 32 for all 4 (or 6) endpoints. */
-#define RUN_TX_RING_COUNT	32
+#define RUN_TX_RING_COUNT	64
 #define RUN_RX_RING_COUNT	1
 
 #define RT2870_WCID_MAX		64
@@ -171,6 +171,7 @@ struct run_softc {
 	device_t			sc_dev;
 	struct usb_device		*sc_udev;
 	struct ifnet			*sc_ifp;
+	uint8_t				wcid2ht[8];
 	uint16_t			wcid_stats[RT2870_WCID_MAX + 1][3];
 #define	RUN_TXCNT	0
 #define	RUN_SUCCESS	1
@@ -179,8 +180,6 @@ struct run_softc {
 	int				(*sc_srom_read)(struct run_softc *,
 					    uint16_t, uint16_t *);
 
-	int				(*sc_send_action)(struct ieee80211_node *, int,
-					    int, void *);
 	int				(*sc_addba_request)(struct ieee80211_node *,
 					    struct ieee80211_tx_ampdu *, int, int, int);
 	int				(*sc_addba_response)(struct ieee80211_node *,
@@ -196,6 +195,7 @@ struct run_softc {
 	uint8_t				freq;
 	uint8_t				ntxchains;
 	uint8_t				nrxchains;
+	uint8_t				rxampdu;
 
 	uint8_t				bbp25;
 	uint8_t				bbp26;
@@ -233,6 +233,7 @@ struct run_softc {
 
 	struct task                     ratectl_task;
 	struct usb_callout              ratectl_ch;
+	int				hz;
 	uint8_t				ratectl_run;
 #define RUN_RATECTL_OFF	0
 
@@ -241,10 +242,10 @@ struct run_softc {
 #define RUN_CMDQ_MASQ	(RUN_CMDQ_MAX - 1)
 	struct run_cmdq			cmdq[RUN_CMDQ_MAX];
 	struct task			cmdq_task;
+	uint8_t				cmdq_key_del[8];
 	uint32_t			cmdq_store;
 	uint8_t				cmdq_exec;
 	uint8_t				cmdq_run;
-	uint8_t				cmdq_key_set;
 #define RUN_CMDQ_ABORT	0
 #define RUN_CMDQ_GO	1
 

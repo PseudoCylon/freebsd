@@ -3014,8 +3014,7 @@ run_bulk_rx_callback(struct usb_xfer *xfer, usb_error_t error)
 	case USB_ST_SETUP:
 tr_setup:
 		if (sc->rx_m == NULL) {
-			sc->rx_m = m_getjcl(M_NOWAIT, MT_DATA, M_PKTHDR,
-			    MJUMPAGESIZE /* xfer can be bigger than MCLBYTES */);
+			sc->rx_m = m_getjcl(M_NOWAIT, MT_DATA, M_PKTHDR, MJUM16BYTES);
 		}
 		if (sc->rx_m == NULL) {
 			DPRINTF("could not allocate mbuf - idle with stall\n");
@@ -5869,9 +5868,14 @@ run_txrx_enable(struct run_softc *sc)
 	tmp |= RT2860_RX_DMA_EN | RT2860_TX_DMA_EN | RT2860_TX_WB_DDONE;
 	run_write(sc, RT2860_WPDMA_GLO_CFG, tmp);
 
-	/* enable Rx bulk aggregation (set timeout and limit) */
+	/*
+	 * enable Rx bulk aggregation
+	 * Set the timeout at max.
+	 * The max limit is 24k, but h/w somehow ads extra 3k.
+	 * For now, set it at receiving buf size MJUM16BYTES - 3k.
+	 */
 	tmp = RT2860_USB_TX_EN | RT2860_USB_RX_EN | RT2860_USB_RX_AGG_EN |
-	    RT2860_USB_RX_AGG_TO(128) | RT2860_USB_RX_AGG_LMT(2);
+	    RT2860_USB_RX_AGG_TO(128) | RT2860_USB_RX_AGG_LMT(13);
 	run_write(sc, RT2860_USB_DMA_CFG, tmp);
 
 	/* set Rx filter */

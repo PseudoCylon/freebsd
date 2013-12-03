@@ -23,8 +23,7 @@
 #ifndef _IF_RUNVAR_H_
 #define	_IF_RUNVAR_H_
 
-#define	RUN_MAX_RXSZ			\
-	MIN(4096, MJUMPAGESIZE)
+#define	RUN_MAX_RXSZ	MJUM16BYTES
 
 /* NB: "11" is the maximum number of padding bytes needed for Tx */
 #define	RUN_MAX_TXSZ			\

@@ -3303,7 +3303,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 			    rt2860_rates[ctl_ridx].sp_ack_dur :
 			    rt2860_rates[ctl_ridx].lp_ack_dur;
 		}
-		*(uint16_t *)wh->i_dur = htole16(dur);
+		USETW(wh->i_dur, dur);
 	}
 
 	DPRINTFN(6, "wcid=%u ridx=%u phy=%x qid=%u txop=%x %s %s %s %s %s %s\n",
@@ -3721,7 +3721,7 @@ run_rt2870_set_chan(struct run_softc *sc, uint32_t chan, uint32_t flag)
 		}
 		if (txpow2 >= 0) {
 			txpow2 = (txpow2 > 0xf) ? (0xf) : (txpow2);
-			r4 |= (txpow1 << 7) | (1 << 6);
+			r4 |= (txpow2 << 7) | (1 << 6);
 		} else {
 			txpow2 += 7;
 			r4 |= (txpow2 << 7);

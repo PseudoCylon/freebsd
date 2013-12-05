@@ -2829,7 +2829,7 @@ run_newassoc(struct ieee80211_node *ni, int isnew)
 	rn->mgt_ridx = ridx;
 	DPRINTF("rate=%d, mgmt_ridx=%d\n", rate, rn->mgt_ridx);
 
-	usb_callout_reset(&sc->ratectl_ch, hz, run_ratectl_to, sc);
+	usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
 }
 
 /*

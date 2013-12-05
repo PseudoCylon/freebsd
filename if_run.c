@@ -342,10 +342,8 @@ static struct ieee80211vap *run_vap_create(struct ieee80211com *,
 		    const uint8_t [IEEE80211_ADDR_LEN]);
 static void	run_vap_delete(struct ieee80211vap *);
 static void	run_cmdq_cb(void *, int);
-static void	run_setup_tx_list(struct run_softc *,
-		    struct run_endpoint_queue *);
-static void	run_unsetup_tx_list(struct run_softc *,
-		    struct run_endpoint_queue *);
+static void	run_setup_tx_list(struct run_softc *);
+static void	run_unsetup_tx_list(struct run_softc *);
 static void	run_qflush(struct ifnet *);
 static int	run_load_microcode(struct run_softc *);
 static int	run_reset(struct run_softc *);
@@ -389,8 +387,7 @@ static void	run_iter_func(void *, struct ieee80211_node *);
 static void	run_newassoc_cb(void *);
 static void	run_newassoc(struct ieee80211_node *, int);
 static void	run_rx_frame(struct run_softc *, struct mbuf *, uint32_t);
-static void	run_tx_free(struct run_endpoint_queue *pq,
-		    struct run_tx_data *, int);
+static void	run_tx_free(struct run_tx_data *, int);
 static int	run_set_tx_desc(struct run_softc *, struct mbuf *,
 		    struct ieee80211_node *, uint8_t, uint16_t);
 static int	run_tx(struct run_softc *, struct mbuf *,
@@ -928,7 +925,6 @@ run_detach(device_t self)
 	struct run_softc *sc = device_get_softc(self);
 	struct ifnet *ifp = sc->sc_ifp;
 	struct ieee80211com *ic;
-	int i;
 
 	RUN_LOCK(sc);
 	sc->sc_detached = 1;
@@ -942,8 +938,7 @@ run_detach(device_t self)
 	sc->cmdq_run = RUN_CMDQ_ABORT;
 
 	/* free TX list, if any */
-	for (i = 0; i != RUN_EP_QUEUES; i++)
-		run_unsetup_tx_list(sc, &sc->sc_epq[i]);
+	run_unsetup_tx_list(sc);
 	RUN_UNLOCK(sc);
 
 	if (ifp) {
@@ -1151,14 +1146,17 @@ run_cmdq_cb(void *arg, int pending)
 }
 
 static void
-run_setup_tx_list(struct run_softc *sc, struct run_endpoint_queue *pq)
+run_setup_tx_list(struct run_softc *sc)
 {
 	struct run_tx_data *data;
+	struct run_endpoint_queue *pq = &sc->sc_epq;
+	struct run_tx_data_head *qh;
 
 	memset(pq, 0, sizeof(*pq));
-
-	STAILQ_INIT(&pq->tx_qh);
 	STAILQ_INIT(&pq->tx_fh);
+
+	for (qh = &pq->tx_qh[0]; qh < &pq->tx_qh[ RUN_EP_QUEUES]; qh++)
+		STAILQ_INIT(qh);
 
 	for (data = &pq->tx_data[0];
 	    data < &pq->tx_data[RUN_TX_RING_COUNT]; data++) {
@@ -1169,14 +1167,17 @@ run_setup_tx_list(struct run_softc *sc, struct run_endpoint_queue *pq)
 }
 
 static void
-run_unsetup_tx_list(struct run_softc *sc, struct run_endpoint_queue *pq)
+run_unsetup_tx_list(struct run_softc *sc)
 {
 	struct run_tx_data *data;
+	struct run_endpoint_queue *pq = &sc->sc_epq;
+	struct run_tx_data_head *qh;
 
 	/* make sure any subsequent use of the queues will fail */
 	pq->tx_nfree = 0;
 	STAILQ_INIT(&pq->tx_fh);
-	STAILQ_INIT(&pq->tx_qh);
+	for (qh = &pq->tx_qh[0]; qh < &pq->tx_qh[ RUN_EP_QUEUES]; qh++)
+		STAILQ_INIT(qh);
 
 	/* free up all node references and mbufs */
 	for (data = &pq->tx_data[0];
@@ -3112,8 +3113,7 @@ tr_setup:
 }
 
 static void
-run_tx_free(struct run_endpoint_queue *pq,
-    struct run_tx_data *data, int txerr)
+run_tx_free(struct run_tx_data *data, int txerr)
 {
 	if (data->m != NULL) {
 		if (data->m->m_flags & M_TXCB)
@@ -3140,7 +3140,7 @@ run_bulk_tx_callbackN(struct usb_xfer *xfer, usb_error_t error, u_int index)
 	struct run_tx_data *data, *tx_free[3];
 	struct ieee80211vap *vap = NULL;
 	struct usb_page_cache *pc;
-	struct run_endpoint_queue *pq = &sc->sc_epq[index];
+	struct run_tx_data_head *qh = &sc->sc_epq.tx_qh[index];
 	struct mbuf *m;
 	usb_frlength_t size;
 	int actlen, sumlen, i;
@@ -3162,11 +3162,11 @@ run_bulk_tx_callbackN(struct usb_xfer *xfer, usb_error_t error, u_int index)
 		/* FALLTHROUGH */
 	case USB_ST_SETUP:
 tr_setup:
-		data = STAILQ_FIRST(&pq->tx_qh);
+		data = STAILQ_FIRST(qh);
 		if (data == NULL)
 			break;
 
-		STAILQ_REMOVE_HEAD(&pq->tx_qh, next);
+		STAILQ_REMOVE_HEAD(qh, next);
 
 		m = data->m;
 		size = (sc->mac_ver == 0x5592) ?
@@ -3271,15 +3271,15 @@ tr_setup:
 		 * Call ieee80211_process_callback() and ieee80211_free_node()
 		 * without holding driver lock to prevent LOR.
 		 */
-		run_tx_free(pq, tx_free[i], i);
+		run_tx_free(tx_free[i], i);
 	}
 	RUN_LOCK(sc);
 
 	for (i = 0; i < 3; i++) {
 		if (tx_free[i] == NULL)
 			continue;
-		STAILQ_INSERT_TAIL(&pq->tx_fh, tx_free[i], next);
-		pq->tx_nfree++;
+		STAILQ_INSERT_TAIL(&sc->sc_epq.tx_fh, tx_free[i], next);
+		sc->sc_epq.tx_nfree++;
 		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 	}
 }
@@ -3366,7 +3366,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 
 	RUN_LOCK(sc);
 	M_FRAG_CNT(m, free);
-	if ((sc->sc_epq[qid].tx_nfree <= isdata ? free : 0) &&
+	if ((sc->sc_epq.tx_nfree <= isdata ? free : 0) &&
 	    (!(m->m_flags & M_FRAG) || m->m_flags & M_FIRSTFRAG)) {
 		sc->sc_ifp->if_drv_flags |= IFF_DRV_OACTIVE;
 		RUN_UNLOCK(sc);
@@ -3378,17 +3378,17 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 		/* returning ENOBUFS will lock up Tx */
 		return (0);
 	}
-	data = STAILQ_FIRST(&sc->sc_epq[qid].tx_fh);
-	STAILQ_REMOVE_HEAD(&sc->sc_epq[qid].tx_fh, next);
+	data = STAILQ_FIRST(&sc->sc_epq.tx_fh);
+	STAILQ_REMOVE_HEAD(&sc->sc_epq.tx_fh, next);
 	/*
 	 * no frag, take one,
 	 * first frag, reserve slots for subsequent frag
 	 * subsequent frag, do not substruct (first frag did it)
 	 */
 	if (!(m->m_flags & M_FRAG))
-		sc->sc_epq[qid].tx_nfree--;
+		sc->sc_epq.tx_nfree--;
 	else if (m->m_flags & M_FIRSTFRAG)
-		sc->sc_epq[qid].tx_nfree -= free;
+		sc->sc_epq.tx_nfree -= free;
 	RUN_UNLOCK(sc);
 
 	data->m = m;
@@ -3514,7 +3514,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 			*(uint16_t *)wh->i_seq =
 			    htole16(ni->ni_txseqs[qid] << IEEE80211_SEQ_SEQ_SHIFT);
 		}
-		STAILQ_INSERT_TAIL(&sc->sc_epq[qid].tx_qh, data, next);
+		STAILQ_INSERT_TAIL(&sc->sc_epq.tx_qh[qid], data, next);
 		usbd_transfer_start(sc->sc_xfer[qid]);
 	}
 	IF_UNLOCK(ifq);
@@ -5941,8 +5941,7 @@ run_init_locked(struct run_softc *sc)
 	if (ntries == 100)
 		goto fail;
 
-	for (i = 0; i != RUN_EP_QUEUES; i++)
-		run_setup_tx_list(sc, &sc->sc_epq[i]);
+	run_setup_tx_list(sc);
 
 	run_set_macaddr(sc, IF_LLADDR(ifp));
 
@@ -6202,8 +6201,7 @@ run_stop(void *arg)
 	run_write(sc, RT2860_MAC_SYS_CTRL, RT2860_BBP_HRST | RT2860_MAC_SRST);
 	run_write(sc, RT2860_MAC_SYS_CTRL, 0);
 
-	for (i = 0; i != RUN_EP_QUEUES; i++)
-		run_unsetup_tx_list(sc, &sc->sc_epq[i]);
+	run_unsetup_tx_list(sc);
 }
 
 static void

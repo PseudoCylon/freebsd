@@ -468,7 +468,7 @@ static const struct {
 	RT5592_DEF_BBP
 };
 
-/* 
+/*
  * Default values for BBP register R196 for RT5592.
  */
 static const uint8_t rt5592_bbp_r196[] = {
@@ -3048,7 +3048,7 @@ tr_setup:
 		STAILQ_REMOVE_HEAD(&pq->tx_qh, next);
 
 		m = data->m;
-		size = (sc->mac_ver == 0x5592) ? 
+		size = (sc->mac_ver == 0x5592) ?
 		    RUN_MAX_TXSZ + sizeof(uint32_t) : RUN_MAX_TXSZ;
 		if ((m->m_pkthdr.len +
 		    sizeof(data->desc) + 3 + 8) > size) {
@@ -3080,7 +3080,7 @@ tr_setup:
 		vap = data->ni->ni_vap;
 		if (ieee80211_radiotap_active_vap(vap)) {
 			struct run_tx_radiotap_header *tap = &sc->sc_txtap;
-			struct rt2860_txwi *txwi = 
+			struct rt2860_txwi *txwi =
 			    (struct rt2860_txwi *)(&data->desc + sizeof(struct rt2870_txd));
 			tap->wt_flags = 0;
 			tap->wt_rate = rt2860_rates[data->ridx].rate;
@@ -4261,7 +4261,7 @@ run_rt5592_set_chan(struct run_softc *sc, u_int chan)
 
 		run_rt3070_rf_write(sc, 55, 0x43);
 
-		/* 
+		/*
 		 * RF R49/R50 Tx power ALC code.
 		 * G-band bit<7:6>=1:0, bit<5:0> range from 0x0 ~ 0x27.
 		 */
@@ -4281,7 +4281,7 @@ run_rt5592_set_chan(struct run_softc *sc, u_int chan)
 			}
 		}
 
-		/* 
+		/*
 		 * RF R49/R50 Tx power ALC code.
 		 * A-band bit<7:6>=1:1, bit<5:0> range from 0x0 ~ 0x2b.
 		 */

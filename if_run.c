@@ -3409,7 +3409,9 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 
 	txwi->flags = flags & 0x1f;
 
-	if (ismcast)
+	if (!(wh->i_fc[1] & IEEE80211_FC1_WEP))
+		txwi->wcid = 0xff;
+	else if (ismcast)
 		txwi->wcid = 0;
 	else {
 		txwi->wcid = (ic->ic_opmode == IEEE80211_M_STA) ?

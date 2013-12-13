@@ -1187,7 +1187,9 @@ run_unsetup_tx_list(struct run_softc *sc)
 			data->m = NULL;
 		}
 		if (data->ni != NULL) {
+			RUN_UNLOCK(sc);
 			ieee80211_free_node(data->ni);
+			RUN_LOCK(sc);
 			data->ni = NULL;
 		}
 	}

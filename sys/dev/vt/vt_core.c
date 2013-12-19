@@ -33,10 +33,9 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include <sys/param.h>
-
 #include "opt_compat.h"
 
+#include <sys/param.h>
 #include <sys/consio.h>
 #include <sys/eventhandler.h>
 #include <sys/fbio.h>
@@ -114,6 +113,7 @@ const struct terminal_class vt_termclass = {
 int sc_txtmouse_no_retrace_wait;
 
 static SYSCTL_NODE(_kern, OID_AUTO, vt, CTLFLAG_RD, 0, "Newcons parameters");
+VT_SYSCTL_INT(enable_altgr, 0, "Enable AltGr key (Do not assume R.Alt as Alt)");
 VT_SYSCTL_INT(debug, 0, "Newcons debug level");
 VT_SYSCTL_INT(deadtimer, 15, "Time to wait busy process in VT_PROCESS mode");
 VT_SYSCTL_INT(suspendswitch, 1, "Switch to VT0 before suspend");
@@ -405,6 +405,8 @@ vt_processkey(keyboard_t *kbd, struct vt_device *vd, int c)
 	if (c & RELKEY) {
 		switch (c & ~RELKEY) {
 		case (SPCLKEY | RALT):
+			if (vt_enable_altgr != 0)
+				break;
 		case (SPCLKEY | LALT):
 			vd->vd_kbstate &= ~ALKED;
 		}
@@ -1322,9 +1324,12 @@ vtterm_ioctl(struct terminal *tm, u_long cmd, caddr_t data,
 	case _IO('c', 110):
 		cmd = CONS_SETKBD;
 		break;
+	default:
+		goto skip_thunk;
 	}
 	ival = IOCPARM_IVAL(data);
 	data = (caddr_t)&ival;
+skip_thunk:
 #endif
 
 	switch (cmd) {

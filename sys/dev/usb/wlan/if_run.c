@@ -452,27 +452,61 @@ static void	run_init_locked(struct run_softc *);
 static void	run_stop(void *);
 static void	run_delay(struct run_softc *, u_int);
 
+#define	RT2860_RIDX_CCK1	 0
+#define	RT2860_RIDX_CCK11	 3
+#define	RT2860_RIDX_OFDM6	 4
+#define	RT2860_RIDX_OFDM24	 8
+#define	RT2860_RIDX_MAX		38
 static const struct rt2860_rate {
 	uint8_t		rate;
 	uint8_t		mcs;
-	enum		ieee80211_phytype phy;
+	uint8_t		pid;
 	uint8_t		ctl_ridx;
+	enum		ieee80211_phytype phy;
 	uint16_t	sp_ack_dur;
 	uint16_t	lp_ack_dur;
 } rt2860_rates[] = {
-	{   2, 0, IEEE80211_T_DS,   0, 314, 314 },
-	{   4, 1, IEEE80211_T_DS,   1, 258, 162 },
-	{  11, 2, IEEE80211_T_DS,   2, 223, 127 },
-	{  22, 3, IEEE80211_T_DS,   3, 213, 117 },
-	{  12, 0, IEEE80211_T_OFDM, 4,  60,  60 },
-	{  18, 1, IEEE80211_T_OFDM, 4,  52,  52 },
-	{  24, 2, IEEE80211_T_OFDM, 6,  48,  48 },
-	{  36, 3, IEEE80211_T_OFDM, 6,  44,  44 },
-	{  48, 4, IEEE80211_T_OFDM, 8,  44,  44 },
-	{  72, 5, IEEE80211_T_OFDM, 8,  40,  40 },
-	{  96, 6, IEEE80211_T_OFDM, 8,  40,  40 },
-	{ 108, 7, IEEE80211_T_OFDM, 8,  40,  40 }
+	{   2, 0, 0, 0, IEEE80211_T_DS,   314, 314 },
+	{   4, 1, 1, 1, IEEE80211_T_DS,   258, 162 },
+	{  11, 2, 2, 2, IEEE80211_T_DS,   223, 127 },
+	{  22, 3, 3, 3, IEEE80211_T_DS,   213, 117 },
+	{  12, 0, 0, 4, IEEE80211_T_OFDM,  60,  60 },
+	{  18, 1, 1, 4, IEEE80211_T_OFDM,  52,  52 },
+	{  24, 2, 2, 6, IEEE80211_T_OFDM,  48,  48 },
+	{  36, 3, 3, 6, IEEE80211_T_OFDM,  44,  44 },
+	{  48, 4, 4, 8, IEEE80211_T_OFDM,  44,  44 },
+	{  72, 5, 5, 8, IEEE80211_T_OFDM,  40,  40 },
+	{  96, 6, 6, 8, IEEE80211_T_OFDM,  40,  40 },
+	{ 108, 7, 7, 8, IEEE80211_T_OFDM,  40,  40 },
+	{   0 | 0x80,  0, 0, 12, IEEE80211_T_HT, 3, 6 },
+	{   1 | 0x80,  1, 1, 12, IEEE80211_T_HT, 2, 3 },
+	{   2 | 0x80,  2, 2, 12, IEEE80211_T_HT, 1, 2 },
+	{   3 | 0x80,  3, 3, 12, IEEE80211_T_HT, 1, 2 },
+	{   4 | 0x80,  4, 4, 12, IEEE80211_T_HT, 1, 1 },
+	{   5 | 0x80,  5, 5, 12, IEEE80211_T_HT, 1, 1 },
+	{   6 | 0x80,  6, 6, 12, IEEE80211_T_HT, 1, 1 },
+	{   7 | 0x80,  7, 7, 12, IEEE80211_T_HT, 1, 1 },
+	{   8 | 0x80,  8, 0, 20, IEEE80211_T_HT, 2, 3 },	/* 2s */
+	{   9 | 0x80,  9, 1, 20, IEEE80211_T_HT, 1, 2 },
+	{  10 | 0x80, 10, 2, 20, IEEE80211_T_HT, 1, 1 },
+	{  11 | 0x80, 11, 3, 20, IEEE80211_T_HT, 1, 1 },
+	{  12 | 0x80, 12, 4, 20, IEEE80211_T_HT, 1, 1 },
+	{  13 | 0x80, 13, 5, 20, IEEE80211_T_HT, 1, 1 },
+	{  14 | 0x80, 14, 6, 20, IEEE80211_T_HT, 1, 1 },
+	{  15 | 0x80, 15, 7, 20, IEEE80211_T_HT, 1, 1 },
+	{  16 | 0x80, 16, 0, 28, IEEE80211_T_HT, 1, 2 },	/* 3s */
+	{  17 | 0x80, 17, 1, 28, IEEE80211_T_HT, 1, 1 },
+	{  18 | 0x80, 18, 2, 28, IEEE80211_T_HT, 1, 1 },
+	{  19 | 0x80, 19, 3, 28, IEEE80211_T_HT, 1, 1 },
+	{  20 | 0x80, 20, 4, 28, IEEE80211_T_HT, 1, 1 },
+	{  21 | 0x80, 21, 5, 28, IEEE80211_T_HT, 1, 1 },
+	{  22 | 0x80, 22, 6, 28, IEEE80211_T_HT, 1, 1 },
+	{  23 | 0x80, 23, 7, 28, IEEE80211_T_HT, 1, 1 },
+	{  32 | 0x80, 32, 0, 36, IEEE80211_T_HT, 1, 1 },	/* Dup */
+	{  33 | 0x80, 33, 0, 37, IEEE80211_T_HT, 1, 1 }
 };
+#define	ht40_dur	sp_ack_dur
+#define	ht20_dur	lp_ack_dur
 
 static const struct {
 	uint16_t	reg;

@@ -2168,6 +2168,12 @@ run_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			tp = &vap->iv_txparms[ieee80211_chan2mode(ic->ic_curchan)];
 			if (tp->ucastrate == IEEE80211_FIXED_RATE_NONE)
 				ratectl |= bid;
+
+			/* set RTS threshold */
+			run_read(sc, RT2860_TX_RTS_CFG, &tmp);
+			tmp &= 0xff0000ff;
+			tmp |= vap->iv_rtsthreshold << 8;
+			run_write(sc, RT2860_TX_RTS_CFG, tmp);
 		}
 
 		/* turn link LED on */

@@ -23,8 +23,7 @@
 #ifndef _IF_RUNVAR_H_
 #define	_IF_RUNVAR_H_
 
-#define	RUN_MAX_RXSZ			\
-	MIN(4096, MJUMPAGESIZE)
+#define	RUN_MAX_RXSZ	MJUM16BYTES
 
 /* NB: "11" is the maximum number of padding bytes needed for Tx */
 #define	RUN_MAX_TXSZ			\
@@ -34,8 +33,7 @@
 
 #define	RUN_TX_TIMEOUT	5000	/* ms */
 
-/* Tx ring count was 8/endpoint, now 32 for all 4 (or 6) endpoints. */
-#define	RUN_TX_RING_COUNT	64
+#define	RUN_TX_RING_COUNT	128
 #define	RUN_RX_RING_COUNT	1
 
 #define	RT2870_WCID_MAX		64
@@ -156,7 +154,7 @@ enum {
 
 struct run_endpoint_queue {
 	struct run_tx_data		tx_data[RUN_TX_RING_COUNT];
-	struct run_tx_data_head		tx_qh;
+	struct run_tx_data_head		tx_qh[RUN_EP_QUEUES];
 	struct run_tx_data_head		tx_fh;
 	uint32_t			tx_nfree;
 };
@@ -223,7 +221,7 @@ struct run_softc {
 
 	struct mtx			sc_mtx;
 
-	struct run_endpoint_queue	sc_epq[RUN_EP_QUEUES];
+	struct run_endpoint_queue	sc_epq;
 
 	struct task                     ratectl_task;
 	struct usb_callout              ratectl_ch;

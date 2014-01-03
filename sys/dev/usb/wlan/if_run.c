@@ -880,7 +880,7 @@ run_attach(device_t self)
 
 	if (sc->rf_rev == RT2860_RF_2750 || sc->rf_rev == RT2860_RF_2850 ||
 	    sc->rf_rev == RT3070_RF_3052 || sc->rf_rev == RT3593_RF_3053 ||
-	    sc->rf_rev == RT5592_RF_5592)
+	    sc->rf_rev == RT5592_RF_5592) {
 		setbit(&bands, IEEE80211_MODE_11A);
 		setbit(&bands, IEEE80211_MODE_11NA);
 	}
@@ -4528,7 +4528,7 @@ run_rt3593_set_chan(struct run_softc *sc, u_int chan)
 
 	run_rt3070_rf_write(sc, 31, (chan <= 14) ? 0xa0 : 0x80);
 
-	h20mhz = (sc->rf24_20mhz & 0x20) >> 5; 
+	h20mhz = (sc->rf24_20mhz & 0x20) >> 5;
 	run_rt3070_rf_read(sc, 30, &rf);
 	rf = (rf & ~0x06) | (h20mhz << 1) | (h20mhz << 2);
 	run_rt3070_rf_write(sc, 30, rf);
@@ -4555,7 +4555,7 @@ run_rt3593_set_chan(struct run_softc *sc, u_int chan)
 	else
 		rf |= 0x40;
 	run_rt3070_rf_write(sc, 6, rf);
-		
+
 	run_rt3070_rf_read(sc, 30, &rf);
 	rf = (rf & ~0x18) | 0x10;
 	run_rt3070_rf_write(sc, 30, rf);
@@ -5762,7 +5762,7 @@ run_bbp_init(struct run_softc *sc)
 		run_bbp_write(sc, 86, 0x46);
 		run_bbp_write(sc, 137, 0x0f);
 	}
-		
+
 	/* fix BBP84 for RT2860E */
 	if (sc->mac_ver == 0x2860 && sc->mac_rev != 0x0101)
 		run_bbp_write(sc, 84, 0x19);

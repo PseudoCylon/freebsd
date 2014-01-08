@@ -3540,7 +3540,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 
 	txwi->flags = flags & 0x1f;
 
-	if (!(wh->i_fc[1] & IEEE80211_FC1_WEP))
+	if (!(wh->i_fc[1] & IEEE80211_FC1_PROTECTED))
 		txwi->wcid = 0xff;
 	else if (ismcast)
 		txwi->wcid = 0;

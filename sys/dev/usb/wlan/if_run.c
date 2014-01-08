@@ -2473,7 +2473,7 @@ run_key_set_cb(void *arg)
 			return;
 	}
 
-	if (!(k->wk_flags & IEEE80211_KEY_GROUP)) {
+	if (k->wk_flags & IEEE80211_KEY_XMIT) {
 		/* set initial packet number in IV+EIV */
 		if (k->wk_cipher->ic_cipher == IEEE80211_CIPHER_WEP) {
 			memset(iv, 0, sizeof iv);
@@ -3540,7 +3540,7 @@ run_set_tx_desc(struct run_softc *sc, struct mbuf *m,
 
 	txwi->flags = flags & 0x1f;
 
-	if (!(wh->i_fc[1] & IEEE80211_FC1_WEP))
+	if (!(wh->i_fc[1] & IEEE80211_FC1_PROTECTED))
 		txwi->wcid = 0xff;
 	else if (ismcast)
 		txwi->wcid = 0;

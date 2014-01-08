@@ -321,6 +321,7 @@ vm_create(const char *name, struct vm **retvm)
 
 	vm = malloc(sizeof(struct vm), M_VM, M_WAITOK | M_ZERO);
 	strcpy(vm->name, name);
+	vm->vmspace = vmspace;
 	vm->cookie = VMINIT(vm, vmspace_pmap(vmspace));
 	vm->vioapic = vioapic_init(vm);
 	vm->vhpet = vhpet_init(vm);
@@ -331,7 +332,6 @@ vm_create(const char *name, struct vm **retvm)
 	}
 
 	vm_activate_cpu(vm, BSP);
-	vm->vmspace = vmspace;
 
 	*retvm = vm;
 	return (0);
@@ -910,7 +910,7 @@ vm_handle_hlt(struct vm *vm, int vcpuid, bool intr_disabled, bool *retu)
 	 * returned from VMRUN() and before we grabbed the vcpu lock.
 	 */
 	if (!vm_nmi_pending(vm, vcpuid) &&
-	    (intr_disabled || vlapic_pending_intr(vcpu->vlapic) < 0)) {
+	    (intr_disabled || !vlapic_pending_intr(vcpu->vlapic, NULL))) {
 		t = ticks;
 		vcpu_require_state_locked(vcpu, VCPU_SLEEPING);
 		if (vlapic_enabled(vcpu->vlapic)) {

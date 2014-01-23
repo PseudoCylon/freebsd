@@ -3302,7 +3302,7 @@ tr_setup:
 		STAILQ_REMOVE_HEAD(qh, next);
 
 		m = data->m;
-		size = (sc->mac_ver == 0x5592) ? 
+		size = (sc->mac_ver == 0x5592) ?
 		    RUN_MAX_TXSZ + sizeof(uint32_t) : RUN_MAX_TXSZ;
 		if ((m->m_pkthdr.len +
 		    sizeof(data->desc) + 3 + 8) > size) {

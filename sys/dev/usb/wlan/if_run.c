@@ -3290,9 +3290,9 @@ tr_setup:
 
 		m = data->m;
 		size = (sc->mac_ver == 0x5592) ?
-		    RUN_MAX_TXSZ + sizeof(uint32_t) : RUN_MAX_TXSZ;
+		    sizeof(data->desc) + sizeof(uint32_t) : sizeof(data->desc);
 		if ((m->m_pkthdr.len +
-		    sizeof(data->desc) + 3 + 8) > size) {
+		    size + 3 + 8) > RUN_MAX_TXSZ) {
 			DPRINTF("data overflow, %u bytes\n",
 			    m->m_pkthdr.len);
 
@@ -3305,8 +3305,6 @@ tr_setup:
 		}
 
 		pc = usbd_xfer_get_frame(xfer, 0);
-		size = (sc->mac_ver == 0x5592) ?
-		    sizeof(data->desc) + sizeof(uint32_t) : sizeof(data->desc);
 		usbd_copy_in(pc, 0, &data->desc, size);
 		usbd_m_copy_in(pc, size, m, 0, m->m_pkthdr.len);
 		size += m->m_pkthdr.len;

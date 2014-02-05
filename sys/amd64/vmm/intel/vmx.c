@@ -907,7 +907,6 @@ vmx_vminit(struct vm *vm, pmap_t pmap)
 			panic("vmx_setup_cr4_shadow %d", error);
 
 		vmx->ctx[i].pmap = pmap;
-		vmx->ctx[i].eptp = vmx->eptp;
 	}
 
 	return (vmx);
@@ -955,19 +954,19 @@ vmx_astpending_trace(struct vmx *vmx, int vcpu, uint64_t rip)
 #endif
 }
 
+static VMM_STAT_INTEL(VCPU_INVVPID_SAVED, "Number of vpid invalidations saved");
+
 static void
-vmx_set_pcpu_defaults(struct vmx *vmx, int vcpu)
+vmx_set_pcpu_defaults(struct vmx *vmx, int vcpu, pmap_t pmap)
 {
-	int lastcpu;
 	struct vmxstate *vmxstate;
-	struct invvpid_desc invvpid_desc = { 0 };
+	struct invvpid_desc invvpid_desc;
 
 	vmxstate = &vmx->state[vcpu];
-	lastcpu = vmxstate->lastcpu;
-	vmxstate->lastcpu = curcpu;
-
-	if (lastcpu == curcpu)
+	if (vmxstate->lastcpu == curcpu)
 		return;
+
+	vmxstate->lastcpu = curcpu;
 
 	vmm_stat_incr(vmx->vm, vcpu, VCPU_MIGRATIONS, 1);
 
@@ -991,8 +990,20 @@ vmx_set_pcpu_defaults(struct vmx *vmx, int vcpu)
 	 * for "all" EP4TAs.
 	 */
 	if (vmxstate->vpid != 0) {
-		invvpid_desc.vpid = vmxstate->vpid;
-		invvpid(INVVPID_TYPE_SINGLE_CONTEXT, invvpid_desc);
+		if (pmap->pm_eptgen == vmx->eptgen[curcpu]) {
+			invvpid_desc._res1 = 0;
+			invvpid_desc._res2 = 0;
+			invvpid_desc.vpid = vmxstate->vpid;
+			invvpid(INVVPID_TYPE_SINGLE_CONTEXT, invvpid_desc);
+		} else {
+			/*
+			 * The invvpid can be skipped if an invept is going to
+			 * be performed before entering the guest. The invept
+			 * will invalidate combined mappings tagged with
+			 * 'vmx->eptp' for all vpids.
+			 */
+			vmm_stat_incr(vmx->vm, vcpu, VCPU_INVVPID_SAVED, 1);
+		}
 	}
 }
 
@@ -1327,6 +1338,30 @@ vmx_emulate_cr_access(struct vmx *vmx, int vcpu, uint64_t exitqual)
 	return (HANDLED);
 }
 
+static enum vie_cpu_mode
+vmx_cpu_mode(void)
+{
+
+	if (vmcs_read(VMCS_GUEST_IA32_EFER) & EFER_LMA)
+		return (CPU_MODE_64BIT);
+	else
+		return (CPU_MODE_COMPATIBILITY);
+}
+
+static enum vie_paging_mode
+vmx_paging_mode(void)
+{
+
+	if (!(vmcs_read(VMCS_GUEST_CR0) & CR0_PG))
+		return (PAGING_MODE_FLAT);
+	if (!(vmcs_read(VMCS_GUEST_CR4) & CR4_PAE))
+		return (PAGING_MODE_32);
+	if (vmcs_read(VMCS_GUEST_IA32_EFER) & EFER_LME)
+		return (PAGING_MODE_64);
+	else
+		return (PAGING_MODE_PAE);
+}
+
 static int
 ept_fault_type(uint64_t ept_qual)
 {
@@ -1486,6 +1521,8 @@ vmx_handle_apic_access(struct vmx *vmx, int vcpuid, struct vm_exit *vmexit)
 		vmexit->u.inst_emul.gpa = DEFAULT_APIC_BASE + offset;
 		vmexit->u.inst_emul.gla = VIE_INVALID_GLA;
 		vmexit->u.inst_emul.cr3 = vmcs_guest_cr3();
+		vmexit->u.inst_emul.cpu_mode = vmx_cpu_mode();
+		vmexit->u.inst_emul.paging_mode = vmx_paging_mode();
 	}
 
 	/*
@@ -1713,6 +1750,8 @@ vmx_exit_process(struct vmx *vmx, int vcpu, struct vm_exit *vmexit)
 			vmexit->u.inst_emul.gpa = gpa;
 			vmexit->u.inst_emul.gla = vmcs_gla();
 			vmexit->u.inst_emul.cr3 = vmcs_guest_cr3();
+			vmexit->u.inst_emul.cpu_mode = vmx_cpu_mode();
+			vmexit->u.inst_emul.paging_mode = vmx_paging_mode();
 		}
 		/*
 		 * If Virtual NMIs control is 1 and the VM-exit is due to an
@@ -1859,8 +1898,6 @@ vmx_run(void *arg, int vcpu, register_t startrip, pmap_t pmap,
 
 	KASSERT(vmxctx->pmap == pmap,
 	    ("pmap %p different than ctx pmap %p", pmap, vmxctx->pmap));
-	KASSERT(vmxctx->eptp == vmx->eptp,
-	    ("eptp %p different than ctx eptp %#lx", eptp, vmxctx->eptp));
 
 	VMPTRLD(vmcs);
 
@@ -1875,7 +1912,7 @@ vmx_run(void *arg, int vcpu, register_t startrip, pmap_t pmap,
 	vmcs_write(VMCS_HOST_CR3, rcr3());
 
 	vmcs_write(VMCS_GUEST_RIP, startrip);
-	vmx_set_pcpu_defaults(vmx, vcpu);
+	vmx_set_pcpu_defaults(vmx, vcpu, pmap);
 	do {
 		/*
 		 * Interrupts are disabled from this point on until the
@@ -1910,7 +1947,7 @@ vmx_run(void *arg, int vcpu, register_t startrip, pmap_t pmap,
 
 		vmx_inject_interrupts(vmx, vcpu, vlapic);
 		vmx_run_trace(vmx, vcpu);
-		rc = vmx_enter_guest(vmxctx, launched);
+		rc = vmx_enter_guest(vmxctx, vmx, launched);
 
 		enable_intr();
 

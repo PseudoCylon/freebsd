@@ -97,6 +97,8 @@
 			anatop: anatop@020c8000 {
 				compatible = "fsl,imx6q-anatop";
 				reg = <0x020c8000 0x1000>;
+				interrupt-parent = <&gic>;
+				interrupts = <49>;
 			}
 
 			gpt: timer@02098000 {
@@ -337,6 +339,11 @@
 				bus-width = <0x4>;
 				status ="disabled";
 			};
+
+			ocotp0: ocotp@021bc000 {
+				compatible = "fsl,imx6q-ocotp";
+				reg = <0x021bc000 0x4000>;
+			}
 		};
 	};
 };

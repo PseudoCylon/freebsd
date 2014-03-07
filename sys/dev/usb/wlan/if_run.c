@@ -2775,6 +2775,11 @@ run_iter_func(void *arg, struct ieee80211_node *ni)
 
 	RUN_LOCK(sc);
 
+	/* Check for special case */
+	if (sc->rvp_cnt <= 1 && vap->iv_opmode == IEEE80211_M_STA &&
+	    ni != vap->iv_bss)
+		goto fail;
+
 	if (sc->rvp_cnt <= 1 && (vap->iv_opmode == IEEE80211_M_IBSS ||
 	    vap->iv_opmode == IEEE80211_M_STA)) {
 		/* read statistic counters (clear on read) and update AMRR state */
@@ -2949,7 +2954,10 @@ run_newassoc(struct ieee80211_node *ni, int isnew)
 	rn->mgt_ridx = ridx;
 	DPRINTF("rate=%d, mgmt_ridx=%d\n", rate, rn->mgt_ridx);
 
-	usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
+	RUN_LOCK(sc);
+	if(sc->ratectl_run != RUN_RATECTL_OFF)
+		usb_callout_reset(&sc->ratectl_ch, sc->hz, run_ratectl_to, sc);
+	RUN_UNLOCK(sc);
 }
 
 /*

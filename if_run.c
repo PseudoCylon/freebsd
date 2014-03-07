@@ -2659,7 +2659,7 @@ run_ratectl_cb(void *arg, int pending)
 		return;
 
 	if (sc->rvp_cnt <= 1 &&
-	    (vap->iv_opmode == IEEE80211_M_STA || vap->iv_opmode == IEEE80211_M_STA))
+	    (vap->iv_opmode == IEEE80211_M_STA || vap->iv_opmode == IEEE80211_M_IBSS))
 		run_iter_func(sc, vap->iv_bss);
 	else {
 		RUN_LOCK(sc);

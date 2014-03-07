@@ -2659,7 +2659,7 @@ run_ratectl_cb(void *arg, int pending)
 		return;
 
 	if (sc->rvp_cnt <= 1 &&
-	    (vap->iv_opmode == IEEE80211_M_STA || vap->iv_opmode == IEEE80211_M_STA))
+	    (vap->iv_opmode == IEEE80211_M_STA || vap->iv_opmode == IEEE80211_M_IBSS))
 		run_iter_func(sc, vap->iv_bss);
 	else {
 		RUN_LOCK(sc);
@@ -2774,11 +2774,6 @@ run_iter_func(void *arg, struct ieee80211_node *ni)
 	int txcnt, success, retrycnt, error, ridx;
 
 	RUN_LOCK(sc);
-
-	/* Check for special case */
-	if (sc->rvp_cnt <= 1 && vap->iv_opmode == IEEE80211_M_STA &&
-	    ni != vap->iv_bss)
-		goto fail;
 
 	if (sc->rvp_cnt <= 1 && (vap->iv_opmode == IEEE80211_M_IBSS ||
 	    vap->iv_opmode == IEEE80211_M_STA)) {

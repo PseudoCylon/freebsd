@@ -2775,11 +2775,6 @@ run_iter_func(void *arg, struct ieee80211_node *ni)
 
 	RUN_LOCK(sc);
 
-	/* Check for special case */
-	if (sc->rvp_cnt <= 1 && vap->iv_opmode == IEEE80211_M_STA &&
-	    ni != vap->iv_bss)
-		goto fail;
-
 	if (sc->rvp_cnt <= 1 && (vap->iv_opmode == IEEE80211_M_IBSS ||
 	    vap->iv_opmode == IEEE80211_M_STA)) {
 		/* read statistic counters (clear on read) and update AMRR state */

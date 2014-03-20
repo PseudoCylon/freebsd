@@ -52,7 +52,6 @@ __FBSDID("$FreeBSD$");
 #include <net/route.h>
 
 #include <netinet/in.h>
-#include <netatalk/at.h>
 #include <netgraph/ng_socket.h>
 
 #include <sys/sysctl.h>
@@ -91,18 +90,11 @@ struct bits {
 	{ RTF_STATIC,	'S' },
 	{ RTF_PROTO1,	'1' },
 	{ RTF_PROTO2,	'2' },
-	{ RTF_PRCLONING,'c' },
 	{ RTF_PROTO3,	'3' },
 	{ RTF_BLACKHOLE,'B' },
 	{ RTF_BROADCAST,'b' },
 #ifdef RTF_LLINFO
 	{ RTF_LLINFO,	'L' },
-#endif
-#ifdef RTF_WASCLONED
-	{ RTF_WASCLONED,'W' },
-#endif
-#ifdef RTF_CLONING
-	{ RTF_CLONING,	'C' },
 #endif
 	{ 0 , 0 }
 };
@@ -217,9 +209,6 @@ pr_family(int af1)
 #endif /*INET6*/
 	case AF_ISO:
 		afname = "ISO";
-		break;
-	case AF_APPLETALK:
-		afname = "AppleTalk";
 		break;
 	case AF_CCITT:
 		afname = "X.25";
@@ -750,14 +739,6 @@ fmt_sockaddr(struct sockaddr *sa, struct sockaddr *mask, int flags)
 	    }
 #endif /*INET6*/
 
-	case AF_APPLETALK:
-	    {
-		if (!(flags & RTF_HOST) && mask)
-			cp = atalk_print2(sa,mask,9);
-		else
-			cp = atalk_print(sa,11);
-		break;
-	    }
 	case AF_NETGRAPH:
 	    {
 		strlcpy(workbuf, ((struct sockaddr_ng *)sa)->sg_data,

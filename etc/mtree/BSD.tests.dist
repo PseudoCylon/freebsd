@@ -12,6 +12,8 @@
         ..
     ..
     share
+        aclocal
+        ..
         atf
         ..
         doc
@@ -75,6 +77,8 @@
             ..
             growfs
             ..
+            ifconfig
+            ..
             mdconfig
             ..
         ..
@@ -90,6 +94,8 @@
         ..
         sys
             kern
+            ..
+            netinet
             ..
         ..
         usr.bin

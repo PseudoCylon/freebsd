@@ -99,7 +99,6 @@ SUBDIR=	${SUBDIR_ORDERED} \
 	${_libnandfs} \
 	libnetbsd \
 	${_libngatm} \
-	libnv \
 	libopie \
 	libpam \
 	libpcap \
@@ -274,6 +273,10 @@ _libusb=	libusb
 .if !defined(LIBRARIES_ONLY)
 afterinstall:
 	${INSTALL_SYMLINK} ../include ${DESTDIR}/usr/lib/include
+.endif
+
+.if !make(install)
+SUBDIR_PARALLEL=
 .endif
 
 .include <bsd.subdir.mk>

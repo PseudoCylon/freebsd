@@ -166,6 +166,7 @@ __DEFAULT_YES_OPTIONS = \
     UNBOUND \
     USB \
     UTMPX \
+    VI \
     WIRELESS \
     WPA_SUPPLICANT_EAPOL \
     ZFS \
@@ -182,6 +183,7 @@ __DEFAULT_NO_OPTIONS = \
     LLDB \
     NAND \
     OFED \
+    OPENLDAP \
     OPENSSH_NONE_CIPHER \
     SHARED_TOOLCHAIN \
     SORT_THREADS \

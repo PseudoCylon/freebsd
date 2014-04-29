@@ -442,9 +442,9 @@ newfs_part ( ) (
 
 # Convenient spot to work around any umount issues that your build environment
 # hits by overriding this method.
-nano_umount () {
+nano_umount () (
 	umount ${1}
-}
+)
 
 populate_slice ( ) (
 	local dev dir mnt lbl
@@ -637,6 +637,7 @@ last_orders () (
 	# after the build completed, for instance to copy the finished
 	# image to a more convenient place:
 	# cp ${NANO_DISKIMGDIR}/_.disk.image /home/ftp/pub/nanobsd.disk
+	true
 )
 
 #######################################################################
@@ -869,12 +870,12 @@ late_customize_cmd () {
 
 # Progress Print
 #	Print $2 at level $1.
-pprint() {
+pprint() (
     if [ "$1" -le $PPLEVEL ]; then
 	runtime=$(( `date +%s` - $NANO_STARTTIME ))
 	printf "%s %.${1}s %s\n" "`date -u -r $runtime +%H:%M:%S`" "#####" "$2" 1>&3
     fi
-}
+)
 
 usage () {
 	(

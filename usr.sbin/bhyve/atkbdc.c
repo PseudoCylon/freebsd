@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2013 Ian Lepore <ian@freebsd.org>
+ * Copyright (c) 2014 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -11,7 +11,7 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
  * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
@@ -22,39 +22,64 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
-#ifndef	IMX_MACHDEP_H
-#define	IMX_MACHDEP_H
+#include <sys/cdefs.h>
+__FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 
-/* Common functions, implemented in imx_machdep.c. */
+#include <machine/vmm.h>
 
-void imx_wdog_cpu_reset(vm_offset_t _wdcr_phys)  __attribute__((__noreturn__));
+#include <stdio.h>
 
-/* From here down, routines are implemented in imxNN_machdep.c. */
+#include "inout.h"
+#include "pci_lpc.h"
 
-/*
- * SoC identity.
- * According to the documentation, there is such a thing as an i.MX6 Dual
- * (non-lite flavor).  However, Freescale doesn't seem to have assigned it a
- * number in their code for determining the SoC type in u-boot.
- *
- * To-do: put silicon revision numbers into the low-order bits somewhere.
- */
-#define	IMXSOC_51	0x51000000
-#define	IMXSOC_53	0x53000000
-#define	IMXSOC_6SL	0x60000000
-#define	IMXSOC_6DL	0x61000000
-#define	IMXSOC_6S	0x62000000
-#define	IMXSOC_6Q	0x63000000
-#define	IMXSOC_FAMSHIFT	28
+#define	KBD_DATA_PORT		0x60
 
-u_int imx_soc_type(void);
-u_int imx_soc_family(void);
+#define	KBD_STS_CTL_PORT	0x64
+#define	 KDB_SYS_FLAG		0x4
 
-#endif
+#define	KBDC_RESET		0xfe
 
+static int
+atkbdc_data_handler(struct vmctx *ctx, int vcpu, int in, int port, int bytes,
+    uint32_t *eax, void *arg)
+{
+	if (bytes != 1)
+		return (INOUT_ERROR);
+
+	*eax = 0;
+
+	return (INOUT_OK);
+}
+
+static int
+atkbdc_sts_ctl_handler(struct vmctx *ctx, int vcpu, int in, int port,
+    int bytes, uint32_t *eax, void *arg)
+{
+	int retval;
+
+	if (bytes != 1)
+		return (INOUT_ERROR);
+
+	retval = INOUT_OK;
+	if (in) {
+		*eax = KDB_SYS_FLAG;	/* system passed POST */
+	} else {
+		switch (*eax) {
+		case KBDC_RESET:	/* Pulse "reset" line. */
+			retval = INOUT_RESET;
+			break;
+		}
+	}
+
+	return (retval);
+}
+
+INOUT_PORT(atkdbc, KBD_DATA_PORT, IOPORT_F_INOUT, atkbdc_data_handler);
+SYSRES_IO(KBD_DATA_PORT, 1);
+INOUT_PORT(atkbdc, KBD_STS_CTL_PORT,  IOPORT_F_INOUT,
+    atkbdc_sts_ctl_handler);
+SYSRES_IO(KBD_STS_CTL_PORT, 1);

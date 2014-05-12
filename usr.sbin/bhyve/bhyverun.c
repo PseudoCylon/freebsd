@@ -85,7 +85,6 @@ char *vmname;
 int guest_ncpus;
 char *guest_uuid_str;
 
-static int pincpu = -1;
 static int guest_vmexit_on_hlt, guest_vmexit_on_pause;
 static int virtio_msix = 1;
 static int x2apic_mode = 0;	/* default is xAPIC */
@@ -123,18 +122,20 @@ struct mt_vmm_info {
 	int		mt_vcpu;	
 } mt_vmm_info[VM_MAXCPU];
 
+static cpuset_t *vcpumap[VM_MAXCPU] = { NULL };
+
 static void
 usage(int code)
 {
 
         fprintf(stderr,
-                "Usage: %s [-aehwAHIPW] [-g <gdb port>] [-s <pci>]\n"
-		"       %*s [-c vcpus] [-p pincpu] [-m mem] [-l <lpc>] <vm>\n"
+                "Usage: %s [-aehwAHIPW] [-g <gdb port>] [-s <pci>] [-c vcpus]\n"
+		"       %*s [-p vcpu:hostcpu] [-m mem] [-l <lpc>] <vm>\n"
 		"       -a: local apic is in xAPIC mode (deprecated)\n"
 		"       -A: create an ACPI table\n"
 		"       -g: gdb port\n"
 		"       -c: # cpus (default 1)\n"
-		"       -p: pin vcpu 'n' to host cpu 'pincpu + n'\n"
+		"       -p: pin 'vcpu' to 'hostcpu'\n"
 		"       -H: vmexit from the guest on hlt\n"
 		"       -P: vmexit from the guest on pause\n"
 		"       -W: force virtio to use single-vector MSI\n"
@@ -145,10 +146,44 @@ usage(int code)
 		"       -m: memory size in MB\n"
 		"       -w: ignore unimplemented MSRs\n"
 		"       -x: local apic is in x2APIC mode\n"
+		"       -Y: disable MPtable generation\n"
 		"       -U: uuid\n",
 		progname, (int)strlen(progname), "");
 
 	exit(code);
+}
+
+static int
+pincpu_parse(const char *opt)
+{
+	int vcpu, pcpu;
+
+	if (sscanf(opt, "%d:%d", &vcpu, &pcpu) != 2) {
+		fprintf(stderr, "invalid format: %s\n", opt);
+		return (-1);
+	}
+
+	if (vcpu < 0 || vcpu >= VM_MAXCPU) {
+		fprintf(stderr, "vcpu '%d' outside valid range from 0 to %d\n",
+		    vcpu, VM_MAXCPU - 1);
+		return (-1);
+	}
+
+	if (pcpu < 0 || pcpu >= CPU_SETSIZE) {
+		fprintf(stderr, "hostcpu '%d' outside valid range from "
+		    "0 to %d\n", pcpu, CPU_SETSIZE - 1);
+		return (-1);
+	}
+
+	if (vcpumap[vcpu] == NULL) {
+		if ((vcpumap[vcpu] = malloc(sizeof(cpuset_t))) == NULL) {
+			perror("malloc");
+			return (-1);
+		}
+		CPU_ZERO(vcpumap[vcpu]);
+	}
+	CPU_SET(pcpu, vcpumap[vcpu]);
+	return (0);
 }
 
 void *
@@ -228,8 +263,7 @@ fbsdrun_deletecpu(struct vmctx *ctx, int vcpu)
 {
 
 	if (!CPU_ISSET(vcpu, &cpumask)) {
-		fprintf(stderr, "addcpu: attempting to delete unknown cpu %d\n",
-		    vcpu);
+		fprintf(stderr, "Attempting to delete unknown cpu %d\n", vcpu);
 		exit(1);
 	}
 
@@ -453,7 +487,6 @@ vmexit_suspend(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 	enum vm_suspend_how how;
 
 	how = vmexit->u.suspended.how;
-	assert(how == VM_SUSPEND_RESET || how == VM_SUSPEND_POWEROFF);
 
 	fbsdrun_deletecpu(ctx, *pvcpu);
 
@@ -470,10 +503,17 @@ vmexit_suspend(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 	}
 	pthread_mutex_unlock(&resetcpu_mtx);
 
-	if (how == VM_SUSPEND_RESET)
+	switch (how) {
+	case VM_SUSPEND_RESET:
 		exit(0);
-	if (how == VM_SUSPEND_POWEROFF)
+	case VM_SUSPEND_POWEROFF:
 		exit(1);
+	case VM_SUSPEND_HALT:
+		exit(2);
+	default:
+		fprintf(stderr, "vmexit_suspend: invalid reason %d\n", how);
+		exit(100);
+	}
 	return (0);	/* NOTREACHED */
 }
 
@@ -492,16 +532,13 @@ static vmexit_handler_t handler[VM_EXITCODE_MAX] = {
 static void
 vm_loop(struct vmctx *ctx, int vcpu, uint64_t rip)
 {
-	cpuset_t mask;
 	int error, rc, prevcpu;
 	enum vm_exitcode exitcode;
 	enum vm_suspend_how how;
 
-	if (pincpu >= 0) {
-		CPU_ZERO(&mask);
-		CPU_SET(pincpu + vcpu, &mask);
+	if (vcpumap[vcpu] != NULL) {
 		error = pthread_setaffinity_np(pthread_self(),
-					       sizeof(mask), &mask);
+		    sizeof(cpuset_t), vcpumap[vcpu]);
 		assert(error == 0);
 	}
 
@@ -610,7 +647,7 @@ int
 main(int argc, char *argv[])
 {
 	int c, error, gdb_port, err, bvmcons;
-	int max_vcpus;
+	int max_vcpus, mptgen;
 	struct vmctx *ctx;
 	uint64_t rip;
 	size_t memsize;
@@ -620,8 +657,9 @@ main(int argc, char *argv[])
 	gdb_port = 0;
 	guest_ncpus = 1;
 	memsize = 256 * MB;
+	mptgen = 1;
 
-	while ((c = getopt(argc, argv, "abehwxAHIPWp:g:c:s:m:l:U:")) != -1) {
+	while ((c = getopt(argc, argv, "abehwxAHIPWYp:g:c:s:m:l:U:")) != -1) {
 		switch (c) {
 		case 'a':
 			x2apic_mode = 0;
@@ -633,7 +671,10 @@ main(int argc, char *argv[])
 			bvmcons = 1;
 			break;
 		case 'p':
-			pincpu = atoi(optarg);
+                        if (pincpu_parse(optarg) != 0) {
+                            errx(EX_USAGE, "invalid vcpu pinning "
+                                 "configuration '%s'", optarg);
+                        }
 			break;
                 case 'c':
 			guest_ncpus = atoi(optarg);
@@ -686,6 +727,9 @@ main(int argc, char *argv[])
 			break;
 		case 'x':
 			x2apic_mode = 1;
+			break;
+		case 'Y':
+			mptgen = 0;
 			break;
 		case 'h':
 			usage(0);			
@@ -746,7 +790,11 @@ main(int argc, char *argv[])
 	/*
 	 * build the guest tables, MP etc.
 	 */
-	mptable_build(ctx, guest_ncpus);
+	if (mptgen) {
+		error = mptable_build(ctx, guest_ncpus);
+		if (error)
+			exit(1);
+	}
 
 	error = smbios_build(ctx);
 	assert(error == 0);

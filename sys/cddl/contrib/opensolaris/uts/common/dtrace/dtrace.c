@@ -27,8 +27,6 @@
  * Copyright (c) 2012 by Delphix. All rights reserved.
  */
 
-#pragma ident	"%Z%%M%	%I%	%E% SMI"
-
 /*
  * DTrace - Dynamic Tracing for Solaris
  *
@@ -238,6 +236,7 @@ static dtrace_ecb_t	*dtrace_ecb_create_cache; /* cached created ECB */
 static dtrace_genid_t	dtrace_probegen;	/* current probe generation */
 static dtrace_helpers_t *dtrace_deferred_pid;	/* deferred helper list */
 static dtrace_enabling_t *dtrace_retained;	/* list of retained enablings */
+static dtrace_genid_t	dtrace_retained_gen;	/* current retained enab gen */
 static dtrace_dynvar_t	dtrace_dynhash_sink;	/* end of dynamic hash chains */
 #if !defined(sun)
 static struct mtx	dtrace_unr_mtx;
@@ -6039,32 +6038,46 @@ dtrace_dif_emulate(dtrace_difo_t *difo, dtrace_mstate_t *mstate,
 			regs[rd] = dtrace_load64(regs[r1]);
 			break;
 		case DIF_OP_ULDSB:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] = (int8_t)
 			    dtrace_fuword8((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_ULDSH:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] = (int16_t)
 			    dtrace_fuword16((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_ULDSW:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] = (int32_t)
 			    dtrace_fuword32((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_ULDUB:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] =
 			    dtrace_fuword8((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_ULDUH:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] =
 			    dtrace_fuword16((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_ULDUW:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] =
 			    dtrace_fuword32((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_ULDX:
+			DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
 			regs[rd] =
 			    dtrace_fuword64((void *)(uintptr_t)regs[r1]);
+			DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
 			break;
 		case DIF_OP_RET:
 			rval = regs[rd];
@@ -6746,7 +6759,7 @@ dtrace_action_chill(dtrace_mstate_t *mstate, hrtime_t val)
 	if (dtrace_destructive_disallow)
 		return;
 
-	flags = (volatile uint16_t *)&cpu_core[cpu->cpu_id].cpuc_dtrace_flags;
+	flags = (volatile uint16_t *)&cpu_core[curcpu].cpuc_dtrace_flags;
 
 	now = dtrace_gethrtime();
 
@@ -6892,6 +6905,63 @@ dtrace_action_ustack(dtrace_mstate_t *mstate, dtrace_state_t *state,
 
 out:
 	mstate->dtms_scratch_ptr = old;
+}
+
+static void
+dtrace_store_by_ref(dtrace_difo_t *dp, caddr_t tomax, size_t size,
+    size_t *valoffsp, uint64_t *valp, uint64_t end, int intuple, int dtkind)
+{
+	volatile uint16_t *flags;
+	uint64_t val = *valp;
+	size_t valoffs = *valoffsp;
+
+	flags = (volatile uint16_t *)&cpu_core[curcpu].cpuc_dtrace_flags;
+	ASSERT(dtkind == DIF_TF_BYREF || dtkind == DIF_TF_BYUREF);
+
+	/*
+	 * If this is a string, we're going to only load until we find the zero
+	 * byte -- after which we'll store zero bytes.
+	 */
+	if (dp->dtdo_rtype.dtdt_kind == DIF_TYPE_STRING) {
+		char c = '\0' + 1;
+		size_t s;
+
+		for (s = 0; s < size; s++) {
+			if (c != '\0' && dtkind == DIF_TF_BYREF) {
+				c = dtrace_load8(val++);
+			} else if (c != '\0' && dtkind == DIF_TF_BYUREF) {
+				DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
+				c = dtrace_fuword8((void *)(uintptr_t)val++);
+				DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
+				if (*flags & CPU_DTRACE_FAULT)
+					break;
+			}
+
+			DTRACE_STORE(uint8_t, tomax, valoffs++, c);
+
+			if (c == '\0' && intuple)
+				break;
+		}
+	} else {
+		uint8_t c;
+		while (valoffs < end) {
+			if (dtkind == DIF_TF_BYREF) {
+				c = dtrace_load8(val++);
+			} else if (dtkind == DIF_TF_BYUREF) {
+				DTRACE_CPUFLAG_SET(CPU_DTRACE_NOFAULT);
+				c = dtrace_fuword8((void *)(uintptr_t)val++);
+				DTRACE_CPUFLAG_CLEAR(CPU_DTRACE_NOFAULT);
+				if (*flags & CPU_DTRACE_FAULT)
+					break;
+			}
+
+			DTRACE_STORE(uint8_t, tomax,
+			    valoffs++, c);
+		}
+	}
+
+	*valp = val;
+	*valoffsp = valoffs;
 }
 
 /*
@@ -7531,7 +7601,8 @@ dtrace_probe(dtrace_id_t id, uintptr_t arg0, uintptr_t arg1,
 				ASSERT(0);
 			}
 
-			if (dp->dtdo_rtype.dtdt_flags & DIF_TF_BYREF) {
+			if (dp->dtdo_rtype.dtdt_flags & DIF_TF_BYREF ||
+			    dp->dtdo_rtype.dtdt_flags & DIF_TF_BYUREF) {
 				uintptr_t end = valoffs + size;
 
 				if (tracememsize != 0 &&
@@ -7540,40 +7611,15 @@ dtrace_probe(dtrace_id_t id, uintptr_t arg0, uintptr_t arg1,
 					tracememsize = 0;
 				}
 
-				if (!dtrace_vcanload((void *)(uintptr_t)val,
+				if (dp->dtdo_rtype.dtdt_flags & DIF_TF_BYREF &&
+				    !dtrace_vcanload((void *)(uintptr_t)val,
 				    &dp->dtdo_rtype, &mstate, vstate))
 					continue;
 
-				/*
-				 * If this is a string, we're going to only
-				 * load until we find the zero byte -- after
-				 * which we'll store zero bytes.
-				 */
-				if (dp->dtdo_rtype.dtdt_kind ==
-				    DIF_TYPE_STRING) {
-					char c = '\0' + 1;
-					int intuple = act->dta_intuple;
-					size_t s;
-
-					for (s = 0; s < size; s++) {
-						if (c != '\0')
-							c = dtrace_load8(val++);
-
-						DTRACE_STORE(uint8_t, tomax,
-						    valoffs++, c);
-
-						if (c == '\0' && intuple)
-							break;
-					}
-
-					continue;
-				}
-
-				while (valoffs < end) {
-					DTRACE_STORE(uint8_t, tomax, valoffs++,
-					    dtrace_load8(val++));
-				}
-
+				dtrace_store_by_ref(dp, tomax, size, &valoffs,
+				    &val, end, act->dta_intuple,
+				    dp->dtdo_rtype.dtdt_flags & DIF_TF_BYREF ?
+				    DIF_TF_BYREF: DIF_TF_BYUREF);
 				continue;
 			}
 
@@ -9714,7 +9760,7 @@ dtrace_difo_validate(dtrace_difo_t *dp, dtrace_vstate_t *vstate, uint_t nregs,
 		    "expected 'ret' as last DIF instruction\n");
 	}
 
-	if (!(dp->dtdo_rtype.dtdt_flags & DIF_TF_BYREF)) {
+	if (!(dp->dtdo_rtype.dtdt_flags & (DIF_TF_BYREF | DIF_TF_BYUREF))) {
 		/*
 		 * If we're not returning by reference, the size must be either
 		 * 0 or the size of one of the base types.
@@ -12346,6 +12392,7 @@ dtrace_enabling_destroy(dtrace_enabling_t *enab)
 		ASSERT(enab->dten_vstate->dtvs_state != NULL);
 		ASSERT(enab->dten_vstate->dtvs_state->dts_nretained > 0);
 		enab->dten_vstate->dtvs_state->dts_nretained--;
+		dtrace_retained_gen++;
 	}
 
 	if (enab->dten_prev == NULL) {
@@ -12388,6 +12435,7 @@ dtrace_enabling_retain(dtrace_enabling_t *enab)
 		return (ENOSPC);
 
 	state->dts_nretained++;
+	dtrace_retained_gen++;
 
 	if (dtrace_retained == NULL) {
 		dtrace_retained = enab;
@@ -12568,7 +12616,8 @@ dtrace_enabling_matchall(void)
 #if defined(sun)
 		cred_t *cr = enab->dten_vstate->dtvs_state->dts_cred.dcr_cred;
 
-		if (INGLOBALZONE(curproc) || getzoneid() == crgetzoneid(cr))
+		if (INGLOBALZONE(curproc) ||
+		    cr != NULL && getzoneid() == crgetzoneid(cr))
 #endif
 			(void) dtrace_enabling_match(enab, NULL);
 	}
@@ -12629,6 +12678,7 @@ dtrace_enabling_provide(dtrace_provider_t *prv)
 {
 	int i, all = 0;
 	dtrace_probedesc_t desc;
+	dtrace_genid_t gen;
 
 	ASSERT(MUTEX_HELD(&dtrace_lock));
 	ASSERT(MUTEX_HELD(&dtrace_provider_lock));
@@ -12639,15 +12689,25 @@ dtrace_enabling_provide(dtrace_provider_t *prv)
 	}
 
 	do {
-		dtrace_enabling_t *enab = dtrace_retained;
+		dtrace_enabling_t *enab;
 		void *parg = prv->dtpv_arg;
 
-		for (; enab != NULL; enab = enab->dten_next) {
+retry:
+		gen = dtrace_retained_gen;
+		for (enab = dtrace_retained; enab != NULL;
+		    enab = enab->dten_next) {
 			for (i = 0; i < enab->dten_ndesc; i++) {
 				desc = enab->dten_desc[i]->dted_probe;
 				mutex_exit(&dtrace_lock);
 				prv->dtpv_pops.dtps_provide(parg, &desc);
 				mutex_enter(&dtrace_lock);
+				/*
+				 * Process the retained enablings again if
+				 * they have changed while we weren't holding
+				 * dtrace_lock.
+				 */
+				if (gen != dtrace_retained_gen)
+					goto retry;
 			}
 		}
 	} while (all && (prv = prv->dtpv_next) != NULL);
@@ -16631,7 +16691,8 @@ dtrace_open(struct cdev *dev, int oflags, int devtype, struct thread *td)
 	 * If this wasn't an open with the "helper" minor, then it must be
 	 * the "dtrace" minor.
 	 */
-	ASSERT(getminor(*devp) == DTRACEMNRN_DTRACE);
+	if (getminor(*devp) == DTRACEMNRN_DTRACE)
+		return (ENXIO);
 #else
 	cred_t *cred_p = NULL;
 	cred_p = dev->si_cred;

@@ -905,6 +905,10 @@ ip_ctloutput(struct socket *so, struct sockopt *sopt)
 {
 	struct	inpcb *inp = sotoinpcb(so);
 	int	error, optval;
+#ifdef	RSS
+	uint32_t rss_bucket;
+	int retval;
+#endif
 
 	error = optval = 0;
 	if (sopt->sopt_level != IPPROTO_IP) {
@@ -1173,9 +1177,6 @@ ip_ctloutput(struct socket *so, struct sockopt *sopt)
 		case IP_RECVTOS:
 		case IP_FLOWID:
 		case IP_FLOWTYPE:
-#ifdef	RSS
-		case IP_RSSCPUID:
-#endif
 			switch (sopt->sopt_name) {
 
 			case IP_TOS:

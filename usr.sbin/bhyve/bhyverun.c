@@ -96,7 +96,7 @@ static cpuset_t cpumask;
 
 static void vm_loop(struct vmctx *ctx, int vcpu, uint64_t rip);
 
-struct vm_exit vmexit[VM_MAXCPU];
+static struct vm_exit vmexit[VM_MAXCPU];
 
 struct bhyvestats {
         uint64_t        vmexit_bogus;
@@ -180,6 +180,27 @@ pincpu_parse(const char *opt)
 	}
 	CPU_SET(pcpu, vcpumap[vcpu]);
 	return (0);
+}
+
+void
+vm_inject_fault(void *arg, int vcpu, int vector, int errcode_valid,
+    int errcode)
+{
+	struct vmctx *ctx;
+	int error;
+
+	ctx = arg;
+	if (errcode_valid)
+		error = vm_inject_exception2(ctx, vcpu, vector, errcode);
+	else
+		error = vm_inject_exception(ctx, vcpu, vector);
+	assert(error == 0);
+
+	/*
+	 * Set the instruction length to 0 to ensure that the instruction is
+	 * restarted when the fault handler returns.
+	 */
+	vmexit[vcpu].inst_length = 0;
 }
 
 void *
@@ -347,8 +368,7 @@ vmexit_rdmsr(struct vmctx *ctx, struct vm_exit *vme, int *pvcpu)
 		fprintf(stderr, "rdmsr to register %#x on vcpu %d\n",
 		    vme->u.msr.code, *pvcpu);
 		if (strictmsr) {
-			error = vm_inject_exception2(ctx, *pvcpu, IDT_GP, 0);
-			assert(error == 0);
+			vm_inject_gp(ctx, *pvcpu);
 			return (VMEXIT_RESTART);
 		}
 	}
@@ -374,8 +394,7 @@ vmexit_wrmsr(struct vmctx *ctx, struct vm_exit *vme, int *pvcpu)
 		fprintf(stderr, "wrmsr to register %#x(%#lx) on vcpu %d\n",
 		    vme->u.msr.code, vme->u.msr.wval, *pvcpu);
 		if (strictmsr) {
-			error = vm_inject_exception2(ctx, *pvcpu, IDT_GP, 0);
-			assert(error == 0);
+			vm_inject_gp(ctx, *pvcpu);
 			return (VMEXIT_RESTART);
 		}
 	}
@@ -484,7 +503,7 @@ vmexit_inst_emul(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 	stats.vmexit_inst_emul++;
 
 	err = emulate_mem(ctx, *pvcpu, vmexit->u.inst_emul.gpa,
-			  &vmexit->u.inst_emul.vie);
+	    &vmexit->u.inst_emul.vie, &vmexit->u.inst_emul.paging);
 
 	if (err) {
 		if (err == EINVAL) {

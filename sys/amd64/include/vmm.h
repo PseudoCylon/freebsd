@@ -29,6 +29,8 @@
 #ifndef _VMM_H_
 #define	_VMM_H_
 
+#include <x86/segments.h>
+
 enum vm_suspend_how {
 	VM_SUSPEND_NONE,
 	VM_SUSPEND_RESET,
@@ -114,6 +116,7 @@ struct vioapic;
 struct vlapic;
 struct vmspace;
 struct vm_object;
+struct vm_guest_paging;
 struct pmap;
 
 typedef int	(*vmm_init_func_t)(int ipinum);
@@ -315,12 +318,37 @@ int vm_entry_intinfo(struct vm *vm, int vcpuid, uint64_t *info);
 
 int vm_get_intinfo(struct vm *vm, int vcpuid, uint64_t *info1, uint64_t *info2);
 
-void vm_inject_gp(struct vm *vm, int vcpuid); /* general protection fault */
-void vm_inject_ud(struct vm *vm, int vcpuid); /* undefined instruction fault */
-void vm_inject_pf(struct vm *vm, int vcpuid, int error_code, uint64_t cr2);
-
 enum vm_reg_name vm_segment_name(int seg_encoding);
 
+struct vm_copyinfo {
+	uint64_t	gpa;
+	size_t		len;
+	void		*hva;
+	void		*cookie;
+};
+
+/*
+ * Set up 'copyinfo[]' to copy to/from guest linear address space starting
+ * at 'gla' and 'len' bytes long. The 'prot' should be set to PROT_READ for
+ * a copyin or PROT_WRITE for a copyout. 
+ *
+ * Returns 0 on success.
+ * Returns 1 if an exception was injected into the guest.
+ * Returns -1 otherwise.
+ *
+ * The 'copyinfo[]' can be passed to 'vm_copyin()' or 'vm_copyout()' only if
+ * the return value is 0. The 'copyinfo[]' resources should be freed by calling
+ * 'vm_copy_teardown()' after the copy is done.
+ */
+int vm_copy_setup(struct vm *vm, int vcpuid, struct vm_guest_paging *paging,
+    uint64_t gla, size_t len, int prot, struct vm_copyinfo *copyinfo,
+    int num_copyinfo);
+void vm_copy_teardown(struct vm *vm, int vcpuid, struct vm_copyinfo *copyinfo,
+    int num_copyinfo);
+void vm_copyin(struct vm *vm, int vcpuid, struct vm_copyinfo *copyinfo,
+    void *kaddr, size_t len);
+void vm_copyout(struct vm *vm, int vcpuid, const void *kaddr,
+    struct vm_copyinfo *copyinfo, size_t len);
 #endif	/* KERNEL */
 
 #define	VM_MAXCPU	16			/* maximum virtual cpus */
@@ -546,5 +574,35 @@ struct vm_exit {
 		struct vm_task_switch task_switch;
 	} u;
 };
+
+/* APIs to inject faults into the guest */
+void vm_inject_fault(void *vm, int vcpuid, int vector, int errcode_valid,
+    int errcode);
+
+static void __inline
+vm_inject_ud(void *vm, int vcpuid)
+{
+	vm_inject_fault(vm, vcpuid, IDT_UD, 0, 0);
+}
+
+static void __inline
+vm_inject_gp(void *vm, int vcpuid)
+{
+	vm_inject_fault(vm, vcpuid, IDT_GP, 1, 0);
+}
+
+static void __inline
+vm_inject_ac(void *vm, int vcpuid, int errcode)
+{
+	vm_inject_fault(vm, vcpuid, IDT_AC, 1, errcode);
+}
+
+static void __inline
+vm_inject_ss(void *vm, int vcpuid, int errcode)
+{
+	vm_inject_fault(vm, vcpuid, IDT_SS, 1, errcode);
+}
+
+void vm_inject_pf(void *vm, int vcpuid, int error_code, uint64_t cr2);
 
 #endif	/* _VMM_H_ */

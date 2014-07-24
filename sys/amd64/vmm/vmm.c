@@ -1235,8 +1235,8 @@ vm_handle_inst_emul(struct vm *vm, int vcpuid, bool *retu)
 		return (0);
 	}
 
-	error = vmm_emulate_instruction(vm, vcpuid, gpa, vie, mread, mwrite,
-	    retu);
+	error = vmm_emulate_instruction(vm, vcpuid, gpa, vie, paging,
+	    mread, mwrite, retu);
 
 	return (error);
 }
@@ -1689,13 +1689,21 @@ vm_inject_exception(struct vm *vm, int vcpuid, struct vm_exception *exception)
 	return (0);
 }
 
-static void
-vm_inject_fault(struct vm *vm, int vcpuid, struct vm_exception *exception)
+void
+vm_inject_fault(void *vmarg, int vcpuid, int vector, int errcode_valid,
+    int errcode)
 {
+	struct vm_exception exception;
 	struct vm_exit *vmexit;
+	struct vm *vm;
 	int error;
 
-	error = vm_inject_exception(vm, vcpuid, exception);
+	vm = vmarg;
+
+	exception.vector = vector;
+	exception.error_code = errcode;
+	exception.error_code_valid = errcode_valid;
+	error = vm_inject_exception(vm, vcpuid, &exception);
 	KASSERT(error == 0, ("vm_inject_exception error %d", error));
 
 	/*
@@ -1710,45 +1718,19 @@ vm_inject_fault(struct vm *vm, int vcpuid, struct vm_exception *exception)
 }
 
 void
-vm_inject_pf(struct vm *vm, int vcpuid, int error_code, uint64_t cr2)
+vm_inject_pf(void *vmarg, int vcpuid, int error_code, uint64_t cr2)
 {
-	struct vm_exception pf = {
-		.vector = IDT_PF,
-		.error_code_valid = 1,
-		.error_code = error_code
-	};
+	struct vm *vm;
 	int error;
 
+	vm = vmarg;
 	VCPU_CTR2(vm, vcpuid, "Injecting page fault: error_code %#x, cr2 %#lx",
 	    error_code, cr2);
 
 	error = vm_set_register(vm, vcpuid, VM_REG_GUEST_CR2, cr2);
 	KASSERT(error == 0, ("vm_set_register(cr2) error %d", error));
 
-	vm_inject_fault(vm, vcpuid, &pf);
-}
-
-void
-vm_inject_gp(struct vm *vm, int vcpuid)
-{
-	struct vm_exception gpf = {
-		.vector = IDT_GP,
-		.error_code_valid = 1,
-		.error_code = 0
-	};
-
-	vm_inject_fault(vm, vcpuid, &gpf);
-}
-
-void
-vm_inject_ud(struct vm *vm, int vcpuid)
-{
-	struct vm_exception udf = {
-		.vector = IDT_UD,
-		.error_code_valid = 0
-	};
-
-	vm_inject_fault(vm, vcpuid, &udf);
+	vm_inject_fault(vm, vcpuid, IDT_PF, 1, error_code);
 }
 
 static VMM_STAT(VCPU_NMI_COUNT, "number of NMIs delivered to vcpu");
@@ -2182,6 +2164,97 @@ vm_segment_name(int seg)
 	return (seg_names[seg]);
 }
 
+void
+vm_copy_teardown(struct vm *vm, int vcpuid, struct vm_copyinfo *copyinfo,
+    int num_copyinfo)
+{
+	int idx;
+
+	for (idx = 0; idx < num_copyinfo; idx++) {
+		if (copyinfo[idx].cookie != NULL)
+			vm_gpa_release(copyinfo[idx].cookie);
+	}
+	bzero(copyinfo, num_copyinfo * sizeof(struct vm_copyinfo));
+}
+
+int
+vm_copy_setup(struct vm *vm, int vcpuid, struct vm_guest_paging *paging,
+    uint64_t gla, size_t len, int prot, struct vm_copyinfo *copyinfo,
+    int num_copyinfo)
+{
+	int error, idx, nused;
+	size_t n, off, remaining;
+	void *hva, *cookie;
+	uint64_t gpa;
+
+	bzero(copyinfo, sizeof(struct vm_copyinfo) * num_copyinfo);
+
+	nused = 0;
+	remaining = len;
+	while (remaining > 0) {
+		KASSERT(nused < num_copyinfo, ("insufficient vm_copyinfo"));
+		error = vmm_gla2gpa(vm, vcpuid, paging, gla, prot, &gpa);
+		if (error)
+			return (error);
+		off = gpa & PAGE_MASK;
+		n = min(remaining, PAGE_SIZE - off);
+		copyinfo[nused].gpa = gpa;
+		copyinfo[nused].len = n;
+		remaining -= n;
+		gla += n;
+		nused++;
+	}
+
+	for (idx = 0; idx < nused; idx++) {
+		hva = vm_gpa_hold(vm, copyinfo[idx].gpa, copyinfo[idx].len,
+		    prot, &cookie);
+		if (hva == NULL)
+			break;
+		copyinfo[idx].hva = hva;
+		copyinfo[idx].cookie = cookie;
+	}
+
+	if (idx != nused) {
+		vm_copy_teardown(vm, vcpuid, copyinfo, num_copyinfo);
+		return (-1);
+	} else {
+		return (0);
+	}
+}
+
+void
+vm_copyin(struct vm *vm, int vcpuid, struct vm_copyinfo *copyinfo, void *kaddr,
+    size_t len)
+{
+	char *dst;
+	int idx;
+	
+	dst = kaddr;
+	idx = 0;
+	while (len > 0) {
+		bcopy(copyinfo[idx].hva, dst, copyinfo[idx].len);
+		len -= copyinfo[idx].len;
+		dst += copyinfo[idx].len;
+		idx++;
+	}
+}
+
+void
+vm_copyout(struct vm *vm, int vcpuid, const void *kaddr,
+    struct vm_copyinfo *copyinfo, size_t len)
+{
+	const char *src;
+	int idx;
+
+	src = kaddr;
+	idx = 0;
+	while (len > 0) {
+		bcopy(src, copyinfo[idx].hva, copyinfo[idx].len);
+		len -= copyinfo[idx].len;
+		src += copyinfo[idx].len;
+		idx++;
+	}
+}
 
 /*
  * Return the amount of in-use and wired memory for the VM. Since

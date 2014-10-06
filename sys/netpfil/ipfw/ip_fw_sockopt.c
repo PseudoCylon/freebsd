@@ -759,14 +759,14 @@ check_action:
 				printf("ipfw: opcode %d, multiple actions"
 					" not allowed\n",
 					cmd->opcode);
-				return EINVAL;
+				return (EINVAL);
 			}
 			have_action = 1;
 			if (l != cmdlen) {
 				printf("ipfw: opcode %d, action must be"
 					" last opcode\n",
 					cmd->opcode);
-				return EINVAL;
+				return (EINVAL);
 			}
 			break;
 #ifdef INET6
@@ -809,25 +809,25 @@ check_action:
 			case O_IP6_DST_MASK:
 			case O_ICMP6TYPE:
 				printf("ipfw: no IPv6 support in kernel\n");
-				return EPROTONOSUPPORT;
+				return (EPROTONOSUPPORT);
 #endif
 			default:
 				printf("ipfw: opcode %d, unknown opcode\n",
 					cmd->opcode);
-				return EINVAL;
+				return (EINVAL);
 			}
 		}
 	}
 	if (have_action == 0) {
 		printf("ipfw: missing action\n");
-		return EINVAL;
+		return (EINVAL);
 	}
 	return 0;
 
 bad_size:
 	printf("ipfw: opcode %d size %d wrong\n",
 		cmd->opcode, cmdlen);
-	return EINVAL;
+	return (EINVAL);
 }
 
 
@@ -940,7 +940,7 @@ ipfw_getrules(struct ip_fw_chain *chain, void *buf, size_t space)
 int
 ipfw_ctl(struct sockopt *sopt)
 {
-#define	RULE_MAXSIZE	(256*sizeof(u_int32_t))
+#define	RULE_MAXSIZE	(512*sizeof(u_int32_t))
 	int error;
 	size_t size, len, valsize;
 	struct ip_fw *buf, *rule;

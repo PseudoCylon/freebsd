@@ -82,6 +82,10 @@ static const struct vie_op two_byte_opcodes[256] = {
 		.op_byte = 0xB6,
 		.op_type = VIE_OP_TYPE_MOVZX,
 	},
+	[0xB7] = {
+		.op_byte = 0xB7,
+		.op_type = VIE_OP_TYPE_MOVZX,
+	},
 	[0xBE] = {
 		.op_byte = 0xBE,
 		.op_type = VIE_OP_TYPE_MOVSX,
@@ -505,6 +509,25 @@ emulate_movx(void *vm, int vcpuid, uint64_t gpa, struct vie *vie,
 		/* write the result */
 		error = vie_update_register(vm, vcpuid, reg, val, size);
 		break;
+	case 0xB7:
+		/*
+		 * MOV and zero extend word from mem (ModRM:r/m) to
+		 * reg (ModRM:reg).
+		 *
+		 * 0F B7/r		movzx r32, r/m16
+		 * REX.W + 0F B7/r	movzx r64, r/m16
+		 */
+		error = memread(vm, vcpuid, gpa, &val, 2, arg);
+		if (error)
+			return (error);
+
+		reg = gpr_map[vie->reg];
+
+		/* zero-extend word */
+		val = (uint16_t)val;
+
+		error = vie_update_register(vm, vcpuid, reg, val, size);
+		break;
 	case 0xBE:
 		/*
 		 * MOV and sign extend byte from mem (ModRM:r/m) to
@@ -726,11 +749,19 @@ emulate_push(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie,
 	/*
 	 * From "Address-Size Attributes for Stack Accesses", Intel SDL, Vol 1
 	 */
-	if (paging->cpu_mode == CPU_MODE_REAL)
+	if (paging->cpu_mode == CPU_MODE_REAL) {
 		stackaddrsize = 2;
-	else if (paging->cpu_mode == CPU_MODE_64BIT)
+	} else if (paging->cpu_mode == CPU_MODE_64BIT) {
+		/*
+		 * "Stack Manipulation Instructions in 64-bit Mode", SDM, Vol 3
+		 * - Stack pointer size is always 64-bits.
+		 * - PUSH/POP of 32-bit values is not possible in 64-bit mode.
+		 * - 16-bit PUSH/POP is supported by using the operand size
+		 *   override prefix (66H).
+		 */
 		stackaddrsize = 8;
-	else {
+		size = vie->opsize_override ? 2 : 8;
+	} else {
 		/*
 		 * In protected or compability mode the 'B' flag in the
 		 * stack-segment descriptor determines the size of the
@@ -773,8 +804,17 @@ emulate_push(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie,
 
 	error = vm_copy_setup(vm, vcpuid, paging, stack_gla, size, PROT_WRITE,
 	    copyinfo, nitems(copyinfo));
-	if (error)
-		return (error);
+	if (error == -1) {
+		/*
+		 * XXX cannot return a negative error value here because it
+		 * ends up being the return value of the VM_RUN() ioctl and
+		 * is interpreted as a pseudo-error (for e.g. ERESTART).
+		 */
+		return (EFAULT);
+	} else if (error == 1) {
+		/* Resume guest execution to handle page fault */
+		return (0);
+	}
 
 	error = memread(vm, vcpuid, mmio_gpa, &val, size, arg);
 	if (error == 0) {

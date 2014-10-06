@@ -572,6 +572,21 @@ vm_malloc(struct vm *vm, vm_paddr_t gpa, size_t len)
 	return (0);
 }
 
+static vm_paddr_t
+vm_maxmem(struct vm *vm)
+{
+	int i;
+	vm_paddr_t gpa, maxmem;
+
+	maxmem = 0;
+	for (i = 0; i < vm->num_mem_segs; i++) {
+		gpa = vm->mem_segs[i].gpa + vm->mem_segs[i].len;
+		if (gpa > maxmem)
+			maxmem = gpa;
+	}
+	return (maxmem);
+}
+
 static void
 vm_gpa_unwire(struct vm *vm)
 {
@@ -709,7 +724,7 @@ vm_assign_pptdev(struct vm *vm, int bus, int slot, int func)
 	if (ppt_assigned_devices(vm) == 0) {
 		KASSERT(vm->iommu == NULL,
 		    ("vm_assign_pptdev: iommu must be NULL"));
-		maxaddr = vmm_mem_maxaddr();
+		maxaddr = vm_maxmem(vm);
 		vm->iommu = iommu_create_domain(maxaddr);
 
 		error = vm_gpa_wire(vm);
@@ -1105,6 +1120,10 @@ vm_handle_hlt(struct vm *vm, int vcpuid, bool intr_disabled, bool *retu)
 			}
 		}
 
+		/* Don't go to sleep if the vcpu thread needs to yield */
+		if (vcpu_should_yield(vm, vcpuid))
+			break;
+
 		/*
 		 * Some Linux guests implement "halt" by having all vcpus
 		 * execute HLT with interrupts disabled. 'halted_cpus' keeps
@@ -1128,7 +1147,11 @@ vm_handle_hlt(struct vm *vm, int vcpuid, bool intr_disabled, bool *retu)
 
 		t = ticks;
 		vcpu_require_state_locked(vcpu, VCPU_SLEEPING);
-		msleep_spin(vcpu, &vcpu->mtx, wmesg, 0);
+		/*
+		 * XXX msleep_spin() cannot be interrupted by signals so
+		 * wake up periodically to check pending signals.
+		 */
+		msleep_spin(vcpu, &vcpu->mtx, wmesg, hz);
 		vcpu_require_state_locked(vcpu, VCPU_FROZEN);
 		vmm_stat_incr(vm, vcpuid, VCPU_IDLE_TICKS, ticks - t);
 	}

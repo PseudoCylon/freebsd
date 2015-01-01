@@ -85,7 +85,8 @@ typedef enum {
 	CTL_LUN_FLAG_DEVID		= 0x20,
 	CTL_LUN_FLAG_DEV_TYPE		= 0x40,
 	CTL_LUN_FLAG_UNMAP		= 0x80,
-	CTL_LUN_FLAG_OFFLINE		= 0x100
+	CTL_LUN_FLAG_OFFLINE		= 0x100,
+	CTL_LUN_FLAG_SERSEQ_READ	= 0x200
 } ctl_backend_lun_flags;
 
 #ifdef _KERNEL
@@ -193,6 +194,8 @@ struct ctl_be_lun {
 	uint32_t		blocksize;	/* passed to CTL */
 	uint16_t		pblockexp;	/* passed to CTL */
 	uint16_t		pblockoff;	/* passed to CTL */
+	uint16_t		ublockexp;	/* passed to CTL */
+	uint16_t		ublockoff;	/* passed to CTL */
 	uint32_t		atomicblock;	/* passed to CTL */
 	uint32_t		req_lun_id;	/* passed to CTL */
 	uint32_t		lun_id;		/* returned from CTL */
@@ -218,6 +221,7 @@ typedef void (*be_vfunc_t)(union ctl_io *io);
 typedef int (*be_ioctl_t)(struct cdev *dev, u_long cmd, caddr_t addr, int flag,
 			  struct thread *td);
 typedef int (*be_luninfo_t)(void *be_lun, struct sbuf *sb);
+typedef uint64_t (*be_lunattr_t)(void *be_lun, const char *attrname);
 
 struct ctl_backend_driver {
 	char		  name[CTL_BE_NAME_LEN]; /* passed to CTL */
@@ -229,6 +233,7 @@ struct ctl_backend_driver {
 	be_func_t	  config_write;		 /* passed to CTL */
 	be_ioctl_t	  ioctl;		 /* passed to CTL */
 	be_luninfo_t	  lun_info;		 /* passed to CTL */
+	be_lunattr_t	  lun_attr;		 /* passed to CTL */
 #ifdef CS_BE_CONFIG_MOVE_DONE_IS_NOT_USED
 	be_func_t	  config_move_done;	 /* passed to backend */
 #endif

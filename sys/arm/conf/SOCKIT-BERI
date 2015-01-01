@@ -121,6 +121,10 @@ device		spibus
 
 # BERI specific
 device		beri_ring
+device		beri_mem
+device		beri_vtblk
+device		vtbe
+device		altera_pio
 
 # Ethernet
 device		ether
@@ -128,6 +132,7 @@ device		mii
 device		smsc
 device		smscphy
 device		dwc
+device		micphy
 
 # USB ethernet support, requires miibus
 device		miibus

@@ -66,14 +66,12 @@ enum {
  */
 struct _ip6dn_args {
        struct ip6_pktopts *opt_or;
-       struct route_in6 ro_or;
        int flags_or;
        struct ip6_moptions *im6o_or;
        struct ifnet *origifp_or;
        struct ifnet *ifp_or;
        struct sockaddr_in6 dst_or;
        u_long mtu_or;
-       struct route_in6 ro_pmtu_or;
 };
 
 
@@ -354,29 +352,6 @@ struct ipfw_ifc {
 };
 
 /* Macro for working with various counters */
-#ifdef USERSPACE
-#define	IPFW_INC_RULE_COUNTER(_cntr, _bytes)	do {	\
-	(_cntr)->pcnt++;				\
-	(_cntr)->bcnt += _bytes;			\
-	(_cntr)->timestamp = time_uptime;		\
-	} while (0)
-
-#define	IPFW_INC_DYN_COUNTER(_cntr, _bytes)	do {		\
-	(_cntr)->pcnt++;				\
-	(_cntr)->bcnt += _bytes;			\
-	} while (0)
-
-#define	IPFW_ZERO_RULE_COUNTER(_cntr) do {		\
-	(_cntr)->pcnt = 0;				\
-	(_cntr)->bcnt = 0;				\
-	(_cntr)->timestamp = 0;				\
-	} while (0)
-
-#define	IPFW_ZERO_DYN_COUNTER(_cntr) do {		\
-	(_cntr)->pcnt = 0;				\
-	(_cntr)->bcnt = 0;				\
-	} while (0)
-#else
 #define	IPFW_INC_RULE_COUNTER(_cntr, _bytes)	do {	\
 	counter_u64_add((_cntr)->cntr, 1);		\
 	counter_u64_add((_cntr)->cntr + 1, _bytes);	\
@@ -399,7 +374,6 @@ struct ipfw_ifc {
 	(_cntr)->pcnt = 0;				\
 	(_cntr)->bcnt = 0;				\
 	} while (0)
-#endif
 
 #define	TARG_VAL(ch, k, f)	((struct table_value *)((ch)->valuestate))[k].f
 #define	IP_FW_ARG_TABLEARG(ch, a, f)	\
